@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build and test
+        run: mvn -B verify
+      - name: Long simulation run
+        run: mvn -B -pl ledger test -Dtest=RandomizedSafetyTest -Dseatline.sim.runs=2000
