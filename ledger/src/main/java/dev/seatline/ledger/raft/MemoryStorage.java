@@ -1,23 +1,20 @@
 package dev.seatline.ledger.raft;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
- * In-memory storage that still models durability: writes land in a pending buffer and only become
- * "on disk" at {@link #sync()}. {@link #crash()} throws the buffer away, which is what a power cut
- * would do to unsynced writes.
+ * In-memory storage that still models durability: the node works on a live copy, and only
+ * {@link #sync()} copies it to the "disk" copy. {@link #losePower()} throws away anything unsynced.
  */
-public final class MemoryStorage implements Storage {
+public final class MemoryStorage implements CrashableStorage {
 
-    // durable copy
-    private HardState durableHard = HardState.INITIAL;
-    private final List<Entry> durableLog = new ArrayList<>();
-
-    // working copy (what the node sees)
+    private final LogBuffer log = new LogBuffer();
     private HardState hard = HardState.INITIAL;
-    private final List<Entry> log = new ArrayList<>();
     private boolean dirty;
+
+    // what would survive a power cut
+    private final LogBuffer durableLog = new LogBuffer();
+    private HardState durableHard = HardState.INITIAL;
 
     @Override
     public HardState hardState() {
@@ -32,55 +29,54 @@ public final class MemoryStorage implements Storage {
 
     @Override
     public long firstIndex() {
-        return 1;
+        return log.firstIndex();
     }
 
     @Override
     public long lastIndex() {
-        return log.size();
+        return log.lastIndex();
     }
 
     @Override
     public long term(long index) {
-        if (index == 0) {
-            return 0;
-        }
-        return entry(index).term();
+        return log.term(index);
     }
 
     @Override
     public Entry entry(long index) {
-        if (index < 1 || index > log.size()) {
-            throw new IndexOutOfBoundsException("no entry " + index + ", last is " + log.size());
-        }
-        return log.get((int) (index - 1));
+        return log.entry(index);
     }
 
     @Override
     public List<Entry> entries(long from, long toInclusive) {
-        if (from > toInclusive) {
-            return List.of();
-        }
-        return List.copyOf(log.subList((int) (from - 1), (int) toInclusive));
+        return log.entries(from, toInclusive);
     }
 
     @Override
     public void append(List<Entry> entries) {
         for (Entry e : entries) {
-            if (e.index() != log.size() + 1) {
-                throw new IllegalArgumentException("gap in log: appending " + e.index() + " after " + log.size());
-            }
-            log.add(e);
+            log.append(e);
         }
         dirty |= !entries.isEmpty();
     }
 
     @Override
     public void truncateFrom(long index) {
-        while (log.size() >= index) {
-            log.removeLast();
-        }
+        log.truncateFrom(index);
         dirty = true;
+    }
+
+    @Override
+    public Snapshot snapshot() {
+        return log.snapshot();
+    }
+
+    @Override
+    public void saveSnapshot(Snapshot snapshot) {
+        log.installSnapshot(snapshot);
+        // snapshots are written straight through, together with everything before them
+        dirty = true;
+        sync();
     }
 
     @Override
@@ -89,16 +85,14 @@ public final class MemoryStorage implements Storage {
             return;
         }
         durableHard = hard;
-        durableLog.clear();
-        durableLog.addAll(log);
+        durableLog.reset(log.snapshot(), log.all());
         dirty = false;
     }
 
-    /** Simulates losing power: anything not synced is gone. */
-    public void crash() {
+    @Override
+    public void losePower() {
         hard = durableHard;
-        log.clear();
-        log.addAll(durableLog);
+        log.reset(durableLog.snapshot(), durableLog.all());
         dirty = false;
     }
 }

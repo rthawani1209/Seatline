@@ -36,4 +36,10 @@ public sealed interface Message {
     record AppendResponse(int from, int to, long term, boolean success, long matchIndex,
                           long rejectedPrevIndex, long conflictTerm, long conflictIndex, long readSeq)
             implements Message {}
+
+    /** Sent instead of AppendEntries when a follower needs entries the leader already compacted. */
+    record InstallSnapshot(int from, int to, long term, long lastIndex, long lastTerm, byte[] data, long readSeq)
+            implements Message {}
+
+    record SnapshotResponse(int from, int to, long term, long matchIndex, long readSeq) implements Message {}
 }

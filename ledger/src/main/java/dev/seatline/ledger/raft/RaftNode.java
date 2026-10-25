@@ -2,7 +2,9 @@ package dev.seatline.ledger.raft;
 
 import dev.seatline.ledger.raft.Message.AppendEntries;
 import dev.seatline.ledger.raft.Message.AppendResponse;
+import dev.seatline.ledger.raft.Message.InstallSnapshot;
 import dev.seatline.ledger.raft.Message.RequestVote;
+import dev.seatline.ledger.raft.Message.SnapshotResponse;
 import dev.seatline.ledger.raft.Message.VoteResponse;
 
 import java.util.ArrayList;
@@ -90,6 +92,14 @@ public final class RaftNode {
         HardState hs = storage.hardState();
         this.term = hs.term();
         this.votedFor = hs.votedFor();
+
+        // Everything in the snapshot was committed, so start from there instead of replaying it.
+        Snapshot snap = storage.snapshot();
+        if (snap.lastIndex() > 0) {
+            stateMachine.restore(snap.data());
+            commitIndex = snap.lastIndex();
+            lastApplied = snap.lastIndex();
+        }
         resetElectionTimer();
     }
 
@@ -140,13 +150,15 @@ public final class RaftNode {
                     || (m instanceof VoteResponse vr && vr.preVote() && vr.granted());
             if (!preVoteTraffic) {
                 // §5.1: a higher term always wins. Remember who is leading if the message says so.
-                becomeFollower(m.term(), m instanceof AppendEntries ? m.from() : HardState.NONE);
+                boolean fromLeader = m instanceof AppendEntries || m instanceof InstallSnapshot;
+                becomeFollower(m.term(), fromLeader ? m.from() : HardState.NONE);
             }
         } else if (m.term() < term) {
             // Stale sender. Reply so it learns the new term and steps down; ignore stale responses.
             switch (m) {
                 case AppendEntries ae -> send(new AppendResponse(id, ae.from(), term, false, 0, ae.prevLogIndex(), -1, 0, 0));
                 case RequestVote rv -> send(new VoteResponse(id, rv.from(), term, false, rv.preVote()));
+                case InstallSnapshot is -> send(new SnapshotResponse(id, is.from(), term, 0, 0));
                 default -> { }
             }
             return;
@@ -157,6 +169,8 @@ public final class RaftNode {
             case VoteResponse vr -> handleVoteResponse(vr);
             case AppendEntries ae -> handleAppendEntries(ae);
             case AppendResponse ar -> handleAppendResponse(ar);
+            case InstallSnapshot is -> handleInstallSnapshot(is);
+            case SnapshotResponse sr -> handleSnapshotResponse(sr);
         }
     }
 
@@ -328,25 +342,34 @@ public final class RaftNode {
     // ---------------------------------------------------------------- replication
 
     private void handleAppendEntries(AppendEntries m) {
-        if (role != Role.FOLLOWER) {
-            // A candidate that hears from a leader of its own term gives up (§5.2).
-            becomeFollower(term, m.from());
+        acceptLeader(m.from());
+
+        long prevIndex = m.prevLogIndex();
+        long prevTerm = m.prevLogTerm();
+        List<Entry> entries = m.entries();
+
+        // Anything at or before our snapshot is committed, so it already matches the leader. Skip it.
+        long snapIndex = storage.firstIndex() - 1;
+        if (prevIndex < snapIndex) {
+            int skip = (int) Math.min(entries.size(), snapIndex - prevIndex);
+            entries = entries.subList(skip, entries.size());
+            if (prevIndex + skip < snapIndex) {
+                send(new AppendResponse(id, m.from(), term, true, snapIndex, 0, 0, 0, m.readSeq()));
+                return;
+            }
+            prevIndex = snapIndex;
+            prevTerm = storage.term(snapIndex);
         }
-        if (leader != m.from()) {
-            leader = m.from();
-            notifyRole();
-        }
-        electionElapsed = 0;
 
         // §5.3 consistency check, with the conflict hint from the paper's "fast backup" note so the
         // leader skips a whole term per round trip instead of one entry.
-        if (m.prevLogIndex() > storage.lastIndex()) {
+        if (prevIndex > storage.lastIndex()) {
             send(new AppendResponse(id, m.from(), term, false, 0, m.prevLogIndex(), -1, storage.lastIndex() + 1, m.readSeq()));
             return;
         }
-        if (storage.term(m.prevLogIndex()) != m.prevLogTerm()) {
-            long conflictTerm = storage.term(m.prevLogIndex());
-            long first = m.prevLogIndex();
+        if (storage.term(prevIndex) != prevTerm) {
+            long conflictTerm = storage.term(prevIndex);
+            long first = prevIndex;
             while (first > storage.firstIndex() && storage.term(first - 1) == conflictTerm) {
                 first--;
             }
@@ -355,7 +378,6 @@ public final class RaftNode {
         }
 
         // Skip entries we already have; truncate at the first real conflict and append the rest.
-        List<Entry> entries = m.entries();
         int i = 0;
         for (; i < entries.size(); i++) {
             Entry e = entries.get(i);
@@ -375,12 +397,54 @@ public final class RaftNode {
         }
 
         // Only trust the leader's commit index up to what this message proved we share with it.
-        long lastNew = m.prevLogIndex() + entries.size();
+        long lastNew = prevIndex + entries.size();
         if (m.leaderCommit() > commitIndex) {
             commitIndex = Math.min(m.leaderCommit(), lastNew);
             applyCommitted();
         }
         send(new AppendResponse(id, m.from(), term, true, lastNew, 0, 0, 0, m.readSeq()));
+    }
+
+    private void acceptLeader(int from) {
+        if (role != Role.FOLLOWER) {
+            // A candidate that hears from a leader of its own term gives up (§5.2).
+            becomeFollower(term, from);
+        }
+        if (leader != from) {
+            leader = from;
+            notifyRole();
+        }
+        electionElapsed = 0;
+    }
+
+    private void handleInstallSnapshot(InstallSnapshot m) {
+        acceptLeader(m.from());
+        if (m.lastIndex() > commitIndex) {
+            storage.saveSnapshot(new Snapshot(m.lastIndex(), m.lastTerm(), m.data()));
+            stateMachine.restore(m.data());
+            commitIndex = m.lastIndex();
+            lastApplied = m.lastIndex();
+        }
+        // if we'd already committed past it, the snapshot holds nothing new for us
+        send(new SnapshotResponse(id, m.from(), term, m.lastIndex(), m.readSeq()));
+    }
+
+    private void handleSnapshotResponse(SnapshotResponse m) {
+        if (role != Role.LEADER) {
+            return;
+        }
+        Progress p = progress.get(m.from());
+        p.recentlyActive = true;
+        p.inflight = false;
+        p.ackedReadSeq = Math.max(p.ackedReadSeq, m.readSeq());
+        if (m.matchIndex() > p.match) {
+            p.match = m.matchIndex();
+        }
+        p.next = Math.max(p.next, p.match + 1);
+        maybeCommit();
+        if (p.next <= storage.lastIndex()) {
+            sendAppend(m.from(), false);
+        }
     }
 
     private void handleAppendResponse(AppendResponse m) {
@@ -419,6 +483,13 @@ public final class RaftNode {
     private void sendAppend(int peer, boolean force) {
         Progress p = progress.get(peer);
         if (p.inflight && !force) {
+            return;
+        }
+        if (p.next < storage.firstIndex()) {
+            // the entries this follower needs are gone; ship the snapshot instead
+            Snapshot snap = storage.snapshot();
+            send(new InstallSnapshot(id, peer, term, snap.lastIndex(), snap.lastTerm(), snap.data(), 0));
+            p.inflight = true;
             return;
         }
         long prev = p.next - 1;
@@ -472,6 +543,15 @@ public final class RaftNode {
                     p.completion().fail(new RaftException.OutcomeUnknown("entry was replaced by another leader"));
                 }
             }
+        }
+        maybeSnapshot();
+    }
+
+    /** Compacts the log once enough entries have been applied since the last snapshot. */
+    private void maybeSnapshot() {
+        long snapIndex = storage.firstIndex() - 1;
+        if (lastApplied - snapIndex >= config.snapshotEvery()) {
+            storage.saveSnapshot(new Snapshot(lastApplied, storage.term(lastApplied), stateMachine.snapshot()));
         }
     }
 

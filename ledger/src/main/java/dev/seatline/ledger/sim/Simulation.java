@@ -1,13 +1,13 @@
 package dev.seatline.ledger.sim;
 
 import dev.seatline.ledger.raft.Completion;
+import dev.seatline.ledger.raft.CrashableStorage;
 import dev.seatline.ledger.raft.Entry;
 import dev.seatline.ledger.raft.MemoryStorage;
 import dev.seatline.ledger.raft.Message;
 import dev.seatline.ledger.raft.RaftConfig;
 import dev.seatline.ledger.raft.RaftException;
 import dev.seatline.ledger.raft.RaftNode;
-import dev.seatline.ledger.raft.RaftObserver;
 import dev.seatline.ledger.raft.Role;
 import dev.seatline.ledger.raft.StateMachine;
 
@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.function.BooleanSupplier;
+import java.util.function.IntFunction;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -43,7 +44,7 @@ public final class Simulation {
     private final Supplier<StateMachine> stateMachines;
     private final Map<Integer, SimNode> nodes = new HashMap<>();
     private final PriorityQueue<Event> events = new PriorityQueue<>();
-    private final SafetyChecker safety = new SafetyChecker();
+    private final SafetyChecker safety;
 
     private final NetworkFaults faults = new NetworkFaults();
     private final int[][] linkGroup; // linkGroup[a][b] != 0 means a and b can't talk
@@ -69,33 +70,40 @@ public final class Simulation {
 
     final class SimNode {
         final int id;
-        final MemoryStorage storage = new MemoryStorage();
+        final CrashableStorage storage;
         RaftNode raft;
         StateMachine stateMachine;
         boolean up;
         int incarnation;
 
-        SimNode(int id) {
+        SimNode(int id, CrashableStorage storage) {
             this.id = id;
+            this.storage = storage;
         }
     }
 
-    public Simulation(long seed, int size, RaftConfig config, Supplier<StateMachine> stateMachines) {
+    public Simulation(long seed, int size, RaftConfig config, Supplier<StateMachine> stateMachines,
+                      IntFunction<CrashableStorage> storages) {
         this.seed = seed;
+        this.safety = new SafetyChecker(seed);
         this.random = new Random(seed);
         this.config = config;
         this.members = IntStream.rangeClosed(1, size).toArray();
         this.stateMachines = stateMachines;
         this.linkGroup = new int[size + 1][size + 1];
         for (int id : members) {
-            SimNode n = new SimNode(id);
+            SimNode n = new SimNode(id, storages.apply(id));
             nodes.put(id, n);
             start(n);
         }
     }
 
+    public Simulation(long seed, int size, RaftConfig config) {
+        this(seed, size, config, ChecksumStateMachine::new, id -> new MemoryStorage());
+    }
+
     public Simulation(long seed, int size) {
-        this(seed, size, RaftConfig.DEFAULT, () -> entry -> entry.data());
+        this(seed, size, RaftConfig.DEFAULT);
     }
 
     // ---------------------------------------------------------------- running
@@ -160,7 +168,7 @@ public final class Simulation {
         n.up = false;
         n.raft = null;
         n.stateMachine = null;
-        n.storage.crash();
+        n.storage.losePower();
     }
 
     /** Brings a crashed node back from whatever its storage kept. */
@@ -351,37 +359,5 @@ public final class Simulation {
 
     public Map<Long, Integer> leadersByTerm() {
         return Map.copyOf(safety.leaders);
-    }
-
-    /** Watches every node for violations of Raft's safety guarantees. */
-    private final class SafetyChecker implements RaftObserver {
-        final Map<Long, Integer> leaders = new HashMap<>();
-        final java.util.TreeMap<Long, Entry> applied = new java.util.TreeMap<>();
-
-        @Override
-        public void roleChanged(int node, Role role, long term, int leader) {
-            if (role != Role.LEADER) {
-                return;
-            }
-            Integer existing = leaders.putIfAbsent(term, node);
-            if (existing != null && existing != node) {
-                throw new SafetyViolation(seed, "two leaders in term " + term + ": node " + existing + " and node " + node);
-            }
-        }
-
-        @Override
-        public void applied(int node, Entry entry) {
-            Entry first = applied.putIfAbsent(entry.index(), entry);
-            if (first != null && (first.term() != entry.term() || !Arrays.equals(first.data(), entry.data()))) {
-                throw new SafetyViolation(seed, "node " + node + " applied a different entry at index "
-                        + entry.index() + " (term " + entry.term() + ", others applied term " + first.term() + ")");
-            }
-        }
-    }
-
-    public static final class SafetyViolation extends AssertionError {
-        public SafetyViolation(long seed, String message) {
-            super(message + " [replay with seed " + seed + "]");
-        }
     }
 }

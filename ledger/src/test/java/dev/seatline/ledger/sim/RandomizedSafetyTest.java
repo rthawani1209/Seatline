@@ -1,14 +1,21 @@
 package dev.seatline.ledger.sim;
 
+import dev.seatline.ledger.raft.CrashableStorage;
+import dev.seatline.ledger.raft.FileStorage;
+import dev.seatline.ledger.raft.MemoryStorage;
+import dev.seatline.ledger.raft.RaftConfig;
 import dev.seatline.ledger.sim.Simulation.Proposal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,13 +31,24 @@ class RandomizedSafetyTest {
     @Test
     void safeUnderCrashesAndPartitions() {
         for (long seed = 1; seed <= RUNS; seed++) {
-            runOnce(seed);
+            runOnce(seed, RaftConfig.DEFAULT, id -> new MemoryStorage());
         }
     }
 
-    static void runOnce(long seed) {
+    @Test
+    void safeWithSnapshotsAndRealFiles(@TempDir Path dir) {
+        // Same chaos, but every node writes a real WAL and snapshots every 20 entries, so crashes
+        // also exercise recovery from disk and slow followers catch up through InstallSnapshot.
+        RaftConfig config = RaftConfig.DEFAULT.withSnapshotEvery(20);
+        for (long seed = 1; seed <= RUNS / 6; seed++) {
+            Path runDir = dir.resolve("run-" + seed);
+            runOnce(seed, config, id -> new FileStorage(runDir.resolve("node-" + id), false));
+        }
+    }
+
+    static void runOnce(long seed, RaftConfig config, IntFunction<CrashableStorage> storages) {
         Random chaos = new Random(seed * 31 + 7);
-        Simulation sim = new Simulation(seed, 5);
+        Simulation sim = new Simulation(seed, 5, config, ChecksumStateMachine::new, storages);
         sim.faults().dropRate = 0.05 + chaos.nextDouble() * 0.15;
         sim.faults().duplicateRate = chaos.nextDouble() * 0.1;
         sim.faults().maxDelayMs = 5 + chaos.nextInt(60);
