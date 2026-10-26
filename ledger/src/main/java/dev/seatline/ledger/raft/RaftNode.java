@@ -75,6 +75,20 @@ public final class RaftNode {
 
     private record Pending(long term, Completion<byte[]> completion) {}
 
+    // ReadIndex (Raft thesis §6.4): a read waits until a majority confirms we're still leader
+    private long readSeq;
+    private final List<PendingRead> reads = new ArrayList<>();
+
+    private static final class PendingRead {
+        final Completion<Void> completion;
+        long seq;   // 0 until a confirmation round is started for it
+        long index; // commit index when that round started
+
+        PendingRead(Completion<Void> completion) {
+            this.completion = completion;
+        }
+    }
+
     public RaftNode(int id, int[] members, RaftConfig config, Storage storage, StateMachine stateMachine,
                     Random random, LongSupplier clock, RaftObserver observer) {
         this.id = id;
@@ -111,7 +125,7 @@ public final class RaftNode {
         if (role == Role.LEADER) {
             // Check quorum: a leader that hasn't heard from a majority for a whole election timeout
             // steps down, so a leader stranded on the minority side of a split stops claiming the role.
-            if (electionElapsed >= config.electionTicks()) {
+            if (config.checkQuorum() && electionElapsed >= config.electionTicks()) {
                 electionElapsed = 0;
                 int active = 1;
                 for (Progress p : progress.values()) {
@@ -190,6 +204,77 @@ public final class RaftNode {
         }
         maybeCommit();
         return index;
+    }
+
+    /**
+     * Lets a caller read the state machine without going through the log, while still seeing every
+     * write that committed before the read started (linearizable reads, Raft thesis §6.4).
+     *
+     * <p>The completion fires once (1) a majority has confirmed this node was still the leader after
+     * the read arrived, so no newer leader could have committed something we haven't seen, and (2)
+     * the state machine has applied everything up to the commit index at that moment. The caller then
+     * reads local state. Reads that arrive while a round is in flight share the next round.
+     */
+    public void readIndex(Completion<Void> completion) {
+        if (role != Role.LEADER) {
+            completion.fail(new RaftException.NotLeader(leader));
+            return;
+        }
+        reads.add(new PendingRead(completion));
+        maybeStartReadRound();
+    }
+
+    private void maybeStartReadRound() {
+        if (role != Role.LEADER || reads.isEmpty()) {
+            return;
+        }
+        // A new leader doesn't know the true commit index until its own no-op commits (§8).
+        if (storage.term(commitIndex) != term) {
+            return;
+        }
+        for (PendingRead r : reads) {
+            if (r.seq != 0) {
+                return; // one round at a time; newer reads wait for the next one
+            }
+        }
+        readSeq++;
+        for (PendingRead r : reads) {
+            r.seq = readSeq;
+            r.index = commitIndex;
+        }
+        for (int peer : peers) {
+            sendAppend(peer, true);
+        }
+        checkReads();
+    }
+
+    private void checkReads() {
+        if (role != Role.LEADER || reads.isEmpty()) {
+            return;
+        }
+        // highest round a majority (counting ourselves) has acknowledged
+        long[] acked = new long[peers.length + 1];
+        acked[0] = readSeq;
+        int i = 1;
+        for (int peer : peers) {
+            acked[i++] = progress.get(peer).ackedReadSeq;
+        }
+        java.util.Arrays.sort(acked);
+        long confirmed = acked[acked.length - quorum()];
+
+        boolean finishedAny = false;
+        while (!reads.isEmpty()) {
+            PendingRead r = reads.getFirst();
+            if (r.seq == 0 || r.seq > confirmed || lastApplied < r.index) {
+                break;
+            }
+            reads.removeFirst();
+            r.completion.complete(null);
+            finishedAny = true;
+        }
+        if (finishedAny) {
+            maybeStartReadRound();
+        }
     }
 
     /**
@@ -328,6 +413,13 @@ public final class RaftNode {
         progress.clear();
         resetElectionTimer();
         notifyRole();
+        if (!reads.isEmpty()) {
+            List<PendingRead> dropped = new ArrayList<>(reads);
+            reads.clear();
+            for (PendingRead r : dropped) {
+                r.completion.fail(new RaftException.NotLeader(newLeader));
+            }
+        }
         if (wasLeader && !pending.isEmpty()) {
             // These entries might still commit under the next leader, or might be overwritten.
             // We can't know which, so tell callers the outcome is unknown and let them retry safely.
@@ -437,6 +529,7 @@ public final class RaftNode {
         p.recentlyActive = true;
         p.inflight = false;
         p.ackedReadSeq = Math.max(p.ackedReadSeq, m.readSeq());
+        checkReads();
         if (m.matchIndex() > p.match) {
             p.match = m.matchIndex();
         }
@@ -455,6 +548,7 @@ public final class RaftNode {
         p.recentlyActive = true;
         p.inflight = false;
         p.ackedReadSeq = Math.max(p.ackedReadSeq, m.readSeq());
+        checkReads();
 
         if (m.success()) {
             if (m.matchIndex() > p.match) {
@@ -488,14 +582,14 @@ public final class RaftNode {
         if (p.next < storage.firstIndex()) {
             // the entries this follower needs are gone; ship the snapshot instead
             Snapshot snap = storage.snapshot();
-            send(new InstallSnapshot(id, peer, term, snap.lastIndex(), snap.lastTerm(), snap.data(), 0));
+            send(new InstallSnapshot(id, peer, term, snap.lastIndex(), snap.lastTerm(), snap.data(), readSeq));
             p.inflight = true;
             return;
         }
         long prev = p.next - 1;
         long last = Math.min(storage.lastIndex(), prev + config.maxEntriesPerAppend());
         List<Entry> entries = storage.entries(p.next, last);
-        send(new AppendEntries(id, peer, term, prev, storage.term(prev), entries, commitIndex, 0));
+        send(new AppendEntries(id, peer, term, prev, storage.term(prev), entries, commitIndex, readSeq));
         p.inflight = true;
     }
 
@@ -510,6 +604,7 @@ public final class RaftNode {
         if (n > commitIndex && storage.term(n) == term) {
             commitIndex = n;
             applyCommitted();
+            maybeStartReadRound();
             // let followers learn the new commit index promptly
             for (int peer : peers) {
                 sendAppend(peer, false);
@@ -545,6 +640,7 @@ public final class RaftNode {
             }
         }
         maybeSnapshot();
+        checkReads();
     }
 
     /** Compacts the log once enough entries have been applied since the last snapshot. */

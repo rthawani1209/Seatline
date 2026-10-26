@@ -20,6 +20,8 @@ import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -332,6 +334,73 @@ public final class Simulation {
         });
         flush(n);
         return p;
+    }
+
+    /** What a client hears back: a result, or an error such as "not the leader". */
+    public record Reply(byte[] result, RaftException error) {}
+
+    /**
+     * Sends a write from a client outside the cluster to one node, over the same lossy network
+     * (requests and replies can be dropped or delayed; partitions between servers don't cut clients
+     * off). A request that's lost, or reaches a node that's down, simply never gets a reply.
+     */
+    public void clientWrite(int nodeId, byte[] command, Consumer<Reply> onReply) {
+        overClientLink(() -> {
+            SimNode n = nodes.get(nodeId);
+            if (!n.up) {
+                return;
+            }
+            n.raft.propose(command, new Completion<>() {
+                @Override
+                public void complete(byte[] result) {
+                    overClientLink(() -> onReply.accept(new Reply(result, null)));
+                }
+
+                @Override
+                public void fail(RaftException error) {
+                    overClientLink(() -> onReply.accept(new Reply(null, error)));
+                }
+            });
+            flush(n);
+        });
+    }
+
+    /** A linearizable read: the query runs against the node's state machine once ReadIndex allows it. */
+    public void clientRead(int nodeId, Function<StateMachine, byte[]> query, Consumer<Reply> onReply) {
+        overClientLink(() -> {
+            SimNode n = nodes.get(nodeId);
+            if (!n.up) {
+                return;
+            }
+            RaftNode raft = n.raft;
+            StateMachine sm = n.stateMachine;
+            raft.readIndex(new Completion<>() {
+                @Override
+                public void complete(Void ignored) {
+                    byte[] result = query.apply(sm);
+                    overClientLink(() -> onReply.accept(new Reply(result, null)));
+                }
+
+                @Override
+                public void fail(RaftException error) {
+                    overClientLink(() -> onReply.accept(new Reply(null, error)));
+                }
+            });
+            flush(n);
+        });
+    }
+
+    private void overClientLink(Runnable action) {
+        if (random.nextDouble() < faults.dropRate) {
+            return;
+        }
+        int span = faults.maxDelayMs - faults.minDelayMs;
+        schedule(faults.minDelayMs + (span > 0 ? random.nextInt(span + 1) : 0), action);
+    }
+
+    /** Runs {@code action} after {@code delayMs} of virtual time. */
+    public void after(long delayMs, Runnable action) {
+        schedule(delayMs, action);
     }
 
     // ---------------------------------------------------------------- inspection
