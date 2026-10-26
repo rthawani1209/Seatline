@@ -20,3 +20,5 @@ jobs:
         run: mvn -B verify
       - name: Long simulation run
         run: mvn -B -pl ledger test -Dtest=RandomizedSafetyTest -Dseatline.sim.runs=2000
+      - name: Seat chaos run (1,000 seeds, every history checked for linearizability)
+        run: mvn -B -pl ledger test -Dtest=SeatChaosTest -Dseatline.chaos.runs=1000
