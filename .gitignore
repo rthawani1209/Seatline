@@ -10,3 +10,4 @@ out/
 *.log
 data/
 .env
+.jqwik-database
