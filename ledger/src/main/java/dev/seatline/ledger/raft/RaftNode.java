@@ -197,6 +197,10 @@ public final class RaftNode {
             completion.fail(new RaftException.NotLeader(leader));
             return -1;
         }
+        if (!stateMachine.accepts(command)) {
+            completion.fail(new RaftException.BadRequest());
+            return -1;
+        }
         long index = appendLocal(command);
         pending.put(index, new Pending(term, completion));
         for (int peer : peers) {

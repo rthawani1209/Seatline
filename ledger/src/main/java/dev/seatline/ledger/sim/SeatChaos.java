@@ -36,7 +36,8 @@ import java.util.Set;
 public final class SeatChaos {
 
     public static final String EVENT = "spring-static";
-    private static final long NO_EXPIRY = 1_000_000_000_000L;
+    // longer than any run lasts, so holds only end by confirm or release
+    private static final long NO_EXPIRY = SeatLedger.MAX_HOLD_TTL_MILLIS;
 
     public record Options(int clients, int opsPerClient, int seats, RaftConfig config) {
         public static final Options DEFAULT = new Options(5, 25, 6, RaftConfig.DEFAULT.withSnapshotEvery(40));

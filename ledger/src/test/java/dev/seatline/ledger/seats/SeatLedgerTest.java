@@ -163,4 +163,51 @@ class SeatLedgerTest {
         assertThat(copy.snapshot()).isEqualTo(ledger.snapshot());
         assertThat(copy.seatMap("show", 2)).isEqualTo(ledger.seatMap("show", 2));
     }
+
+    @Test
+    void transferCountsRecipientsLiveHolds() {
+        hold("jordan", "h1", 0, "A1");
+        ledger.execute(new Confirm("h1", "p"), 1);
+        // sam is at the limit of 2 through holds alone
+        assertThat(hold("sam", "h2", 2, "A2", "A3").ok()).isTrue();
+        assertThat(ledger.execute(new Transfer("T-h1-A1", "jordan", "sam"), 3).outcome())
+                .isEqualTo(Outcome.LIMIT_REACHED);
+        // once sam's holds run out, there's room again
+        assertThat(ledger.execute(new Transfer("T-h1-A1", "jordan", "sam"), 2 + 5 * MIN + 1).ok()).isTrue();
+        ledger.checkInvariants();
+    }
+
+    @Test
+    void holdLengthIsCapped() {
+        SeatResult tooLong = ledger.execute(
+                new Hold("show", List.of("A1"), "x", "h1", SeatLedger.MAX_HOLD_TTL_MILLIS + 1), 0);
+        assertThat(tooLong.outcome()).isEqualTo(Outcome.BAD_REQUEST);
+        assertThat(ledger.execute(new Hold("show", List.of("A1"), "x", "h2", Long.MAX_VALUE), 1_000).outcome())
+                .isEqualTo(Outcome.BAD_REQUEST);
+        assertThat(ledger.execute(
+                new Hold("show", List.of("A1"), "x", "h3", SeatLedger.MAX_HOLD_TTL_MILLIS), 0).ok()).isTrue();
+    }
+
+    @Test
+    void garbageEntriesGetBadRequestInsteadOfCrashing() {
+        byte[] valid = SeatCodec.encode(new SeatRequest(5, 1, new Hold("show", List.of("A1"), "jordan", "h1", MIN)));
+        byte[] truncated = java.util.Arrays.copyOf(valid, valid.length - 3);
+        byte[] unknownType = valid.clone();
+        unknownType[16] = 99;
+        byte[] hugeList = java.nio.ByteBuffer.allocate(21).putLong(1).putLong(1).put((byte) 1)
+                .putInt(Integer.MAX_VALUE).array();
+        byte[] trailing = java.util.Arrays.copyOf(valid, valid.length + 4);
+
+        long index = 1;
+        for (byte[] bad : List.of(truncated, unknownType, hugeList, trailing, new byte[] {1, 2, 3})) {
+            assertThat(ledger.accepts(bad)).isFalse();
+            SeatResult r = SeatCodec.decodeResult(ledger.apply(new Entry(1, index++, 0, bad)));
+            assertThat(r.outcome()).isEqualTo(Outcome.BAD_REQUEST);
+        }
+        assertThat(ledger.accepts(new byte[0])).isFalse();
+        // and the ledger still works afterwards
+        assertThat(ledger.accepts(valid)).isTrue();
+        assertThat(SeatCodec.decodeResult(ledger.apply(new Entry(1, index, 0, valid))).ok()).isTrue();
+        ledger.checkInvariants();
+    }
 }

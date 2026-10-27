@@ -66,6 +66,20 @@ class SeatLedgerPropertiesTest {
             }
             long sold = ledger.seatMap("ev", now).stream().filter(v -> v.status() == SeatStatus.SOLD).count();
             assertThat(sold).isEqualTo(ownerBySeat.size());
+
+            // nobody ever has more seats (live holds plus tickets) than the limit of 3
+            Map<String, Integer> perFan = new HashMap<>();
+            for (SeatView v : ledger.seatMap("ev", now)) {
+                String fan = switch (v.status()) {
+                    case HELD -> ledger.hold(v.holdId()).fanId();
+                    case SOLD -> ledger.ticket(v.ticketId()).ownerFan();
+                    case FREE -> null;
+                };
+                if (fan != null) {
+                    perFan.merge(fan, 1, Integer::sum);
+                }
+            }
+            assertThat(perFan.values()).allMatch(n -> n <= 3);
         }
     }
 

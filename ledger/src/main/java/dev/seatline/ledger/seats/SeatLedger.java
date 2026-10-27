@@ -37,6 +37,9 @@ public final class SeatLedger implements StateMachine {
     /** Keep answers for this many clients for retry deduplication; the oldest are forgotten first. */
     static final int MAX_CLIENTS = 100_000;
 
+    /** Longest hold a fan can get. Also keeps {@code now + ttl} far from overflowing. */
+    public static final long MAX_HOLD_TTL_MILLIS = 15 * 60 * 1000;
+
     private final TreeMap<String, EventSeats> events = new TreeMap<>();
     private final TreeMap<String, HoldRecord> holds = new TreeMap<>();
     private final TreeMap<String, Ticket> tickets = new TreeMap<>();
@@ -76,8 +79,26 @@ public final class SeatLedger implements StateMachine {
     // ---------------------------------------------------------------- applying commands
 
     @Override
+    public boolean accepts(byte[] command) {
+        return decodeOrNull(command) != null;
+    }
+
+    private static SeatRequest decodeOrNull(byte[] bytes) {
+        try {
+            return SeatCodec.decodeRequest(bytes);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    @Override
     public byte[] apply(Entry entry) {
-        SeatRequest req = SeatCodec.decodeRequest(entry.data());
+        // A committed entry that can't be decoded gets the same answer on every replica. Throwing
+        // here would crash every node, and keep crashing them each time they replay the log.
+        SeatRequest req = decodeOrNull(entry.data());
+        if (req == null) {
+            return SeatCodec.encode(SeatResult.of(Outcome.BAD_REQUEST));
+        }
         if (req.clientId() != 0) {
             Answer previous = answers.get(req.clientId());
             if (previous != null && req.seq() == previous.seq()) {
@@ -102,7 +123,7 @@ public final class SeatLedger implements StateMachine {
             case Confirm c -> confirm(c, now);
             case Release r -> release(r);
             case ExpireDue e -> expireDue(now);
-            case Transfer t -> transfer(t);
+            case Transfer t -> transfer(t, now);
             case Return r -> returnTicket(r);
         };
     }
@@ -127,7 +148,8 @@ public final class SeatLedger implements StateMachine {
         if (ev == null) {
             return SeatResult.of(Outcome.NO_SUCH_EVENT);
         }
-        if (h.seatIds().isEmpty() || h.ttlMillis() <= 0 || new HashSet<>(h.seatIds()).size() != h.seatIds().size()) {
+        if (h.seatIds().isEmpty() || h.ttlMillis() <= 0 || h.ttlMillis() > MAX_HOLD_TTL_MILLIS
+                || new HashSet<>(h.seatIds()).size() != h.seatIds().size()) {
             return SeatResult.of(Outcome.BAD_REQUEST);
         }
         if (holds.containsKey(h.holdId())) {
@@ -232,7 +254,7 @@ public final class SeatLedger implements StateMachine {
         return SeatResult.ok(List.copyOf(expired));
     }
 
-    private SeatResult transfer(Transfer t) {
+    private SeatResult transfer(Transfer t, long now) {
         Ticket ticket = tickets.get(t.ticketId());
         if (ticket == null) {
             return SeatResult.of(Outcome.NO_SUCH_TICKET);
@@ -244,7 +266,8 @@ public final class SeatLedger implements StateMachine {
             return SeatResult.of(Outcome.BAD_REQUEST);
         }
         EventSeats ev = events.get(ticket.eventId());
-        if (ev.ticketsByFan.getOrDefault(t.toFan(), 0) + 1 > ev.limitPerFan) {
+        // same allowance as buying: live holds count too
+        if (seatsFor(ev, t.toFan(), now) + 1 > ev.limitPerFan) {
             return SeatResult.of(Outcome.LIMIT_REACHED);
         }
         tickets.put(ticket.ticketId(), new Ticket(ticket.ticketId(), ticket.eventId(), ticket.seatId(), t.toFan(),

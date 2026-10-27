@@ -11,4 +11,13 @@ public interface StateMachine {
 
     /** Replaces the whole state with a snapshot taken by {@link #snapshot()}. */
     void restore(byte[] snapshot);
+
+    /**
+     * Checked by the leader before a command goes into the log, so obviously broken requests are
+     * turned away up front. {@link #apply} must still cope with anything, because the log can hold
+     * entries written by an older version of the code.
+     */
+    default boolean accepts(byte[] command) {
+        return command.length > 0;
+    }
 }

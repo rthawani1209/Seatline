@@ -81,6 +81,9 @@ public final class SeatCodec {
                 case 7 -> new Return(in.readUTF(), in.readUTF());
                 default -> throw new IllegalArgumentException("unknown seat command " + type);
             };
+            if (in.available() > 0) {
+                throw new IllegalArgumentException("trailing bytes after seat command");
+            }
             return new SeatRequest(clientId, seq, c);
         });
     }
@@ -134,6 +137,10 @@ public final class SeatCodec {
 
     static List<String> readList(DataInputStream in) throws IOException {
         int n = in.readInt();
+        // every string takes at least 2 bytes, so a bigger count can only come from garbage
+        if (n < 0 || n > in.available() / 2) {
+            throw new IOException("bad list length " + n);
+        }
         List<String> list = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             list.add(in.readUTF());

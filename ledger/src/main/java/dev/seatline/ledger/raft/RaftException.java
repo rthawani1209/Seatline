@@ -20,6 +20,13 @@ public class RaftException extends RuntimeException {
         }
     }
 
+    /** The state machine refused the command before it was logged; retrying won't help. */
+    public static final class BadRequest extends RaftException {
+        public BadRequest() {
+            super("malformed command");
+        }
+    }
+
     /**
      * Leadership was lost before the entry committed. The entry may or may not commit later, so the
      * caller has to retry with the same request id (the state machine deduplicates it).

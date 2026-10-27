@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
  *
  * <p>Outputs are compared as short summaries (outcome plus seat or ticket ids). Hold expiry times
  * are left out because the cluster stamps real times while the model runs at time 0; the chaos
- * workload uses holds that never expire.
+ * workload's holds last longer than the run, so none expire.
  */
 public final class SeatModel implements Model<SeatModel.State> {
 
