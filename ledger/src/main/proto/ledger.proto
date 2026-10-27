@@ -1,0 +1,178 @@
+syntax = "proto3";
+
+package seatline.ledger;
+
+option java_package = "dev.seatline.ledger.rpc";
+option java_multiple_files = true;
+option java_outer_classname = "LedgerProto";
+
+// ---------------------------------------------------------------- node to node
+
+// Raft messages are one-way: a reply is just another message going the other way. Each node keeps
+// one long-lived stream open to each peer, so messages to a peer arrive in order and there's no
+// per-message call overhead.
+service Raft {
+  rpc Stream(stream RaftMessage) returns (Empty);
+}
+
+message Entry {
+  int64 term = 1;
+  int64 index = 2;
+  int64 time_millis = 3;
+  bytes data = 4;
+}
+
+message RaftMessage {
+  int32 from = 1;
+  int32 to = 2;
+  int64 term = 3;
+  oneof body {
+    RequestVote request_vote = 4;
+    VoteResponse vote_response = 5;
+    AppendEntries append_entries = 6;
+    AppendResponse append_response = 7;
+    InstallSnapshot install_snapshot = 8;
+    SnapshotResponse snapshot_response = 9;
+  }
+}
+
+message RequestVote {
+  int64 last_log_index = 1;
+  int64 last_log_term = 2;
+  bool pre_vote = 3;
+}
+
+message VoteResponse {
+  bool granted = 1;
+  bool pre_vote = 2;
+}
+
+message AppendEntries {
+  int64 prev_log_index = 1;
+  int64 prev_log_term = 2;
+  repeated Entry entries = 3;
+  int64 leader_commit = 4;
+  int64 read_seq = 5;
+}
+
+message AppendResponse {
+  bool success = 1;
+  int64 match_index = 2;
+  int64 rejected_prev_index = 3;
+  int64 conflict_term = 4;
+  int64 conflict_index = 5;
+  int64 read_seq = 6;
+}
+
+message InstallSnapshot {
+  int64 last_index = 1;
+  int64 last_term = 2;
+  bytes data = 3;
+  int64 read_seq = 4;
+}
+
+message SnapshotResponse {
+  int64 match_index = 1;
+  int64 read_seq = 2;
+}
+
+// ---------------------------------------------------------------- clients
+
+// Writes carry a seat request in the ledger's own binary format (SeatCodec), the same bytes that go
+// into the log, so there's one encoding of a command rather than two that could drift apart.
+service Ledger {
+  rpc Write(WriteRequest) returns (WriteReply);
+  rpc SeatMap(SeatMapRequest) returns (SeatMapReply);
+  rpc GetTicket(TicketRequest) returns (TicketReply);
+}
+
+enum Status {
+  OK = 0;
+  NOT_LEADER = 1;
+  // the command was malformed; retrying won't help
+  BAD_REQUEST = 2;
+  // leadership was lost before the write committed: retry with the same client id and seq
+  OUTCOME_UNKNOWN = 3;
+  // the node is down or timed out waiting
+  UNAVAILABLE = 4;
+}
+
+message WriteRequest {
+  bytes request = 1;
+}
+
+message WriteReply {
+  Status status = 1;
+  bytes result = 2;
+  // who this node thinks the leader is, 0 if it doesn't know
+  int32 leader_hint = 3;
+}
+
+message SeatMapRequest {
+  string event_id = 1;
+}
+
+message Seat {
+  enum State {
+    FREE = 0;
+    HELD = 1;
+    SOLD = 2;
+  }
+  string seat_id = 1;
+  State state = 2;
+  string hold_id = 3;
+  string ticket_id = 4;
+}
+
+message SeatMapReply {
+  Status status = 1;
+  int32 leader_hint = 2;
+  repeated Seat seats = 3;
+}
+
+message TicketRequest {
+  string ticket_id = 1;
+}
+
+message TicketReply {
+  Status status = 1;
+  int32 leader_hint = 2;
+  bool found = 3;
+  string ticket_id = 4;
+  string event_id = 5;
+  string seat_id = 6;
+  string owner_fan = 7;
+  int32 version = 8;
+  string payment_ref = 9;
+}
+
+// ---------------------------------------------------------------- admin (chaos panel, benchmarks)
+
+service Admin {
+  rpc GetStatus(Empty) returns (NodeStatus);
+  // stops the node as if its power was cut; it keeps only what was fsynced
+  rpc Crash(Empty) returns (Empty);
+  // restarts a crashed node from its files on disk
+  rpc Revive(Empty) returns (Empty);
+  // drops all traffic to and from the listed nodes
+  rpc Partition(PartitionRequest) returns (Empty);
+  rpc Heal(Empty) returns (Empty);
+}
+
+message Empty {}
+
+message NodeStatus {
+  int32 id = 1;
+  bool up = 2;
+  string role = 3;
+  int64 term = 4;
+  int32 leader = 5;
+  int64 commit_index = 6;
+  int64 last_applied = 7;
+  int64 last_index = 8;
+  repeated int32 cut_off = 9;
+}
+
+message PartitionRequest {
+  repeated int32 cut_off = 1;
+}
