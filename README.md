@@ -21,8 +21,8 @@ seatline/
 ├── frontend/            Next.js fan and organizer app              (coming)
 ├── loadtest/            Gatling "simulate a sell-out"              (coming)
 ├── infra/               Docker and AWS Terraform                   (coming)
-├── scripts/             check.sh (runs the same checks as CI)
-├── docs/                architecture, decisions, interview notes
+├── scripts/             check.sh (same checks as CI), chaos.sh (writes docs/results/chaos.json)
+├── docs/                ARCHITECTURE, INTERVIEW, CLAIMS (every claim and its proof), results/
 └── pom.xml              Maven build for the Java modules
 ```
 

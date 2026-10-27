@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-27",
+  "machine": "Linux amd64, 4 cores, Java 21.0.12.1",
+  "command": "scripts/chaos.sh 10000",
+  "seeds": "1..10000",
+  "runs": 10000,
+  "operations_checked": 1249639,
+  "operations_with_unknown_outcome": 1699,
+  "leader_terms_across_runs": 71259,
+  "tickets_sold_across_runs": 59095,
+  "not_linearizable": 0,
+  "double_sold_seats": 0,
+  "replica_mismatches": 0,
+  "checks_gave_up": 0,
+  "wall_seconds": 35.7
+}
