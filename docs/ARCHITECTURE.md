@@ -51,9 +51,29 @@ Code: [`ledger/.../raft/RaftNode.java`](../ledger/src/main/java/dev/seatline/led
 | Time | Hold expiry uses the timestamp the leader stamped on the log entry, never a server's own clock, so all five copies agree on whether a hold had expired. | `Entry.timeMillis` |
 | Bad input | A command that can't be decoded is turned away by the leader, and if one ever reaches the log every copy answers `BAD_REQUEST` instead of crashing. | `SeatLedger.accepts` |
 
+### Running on a real network
+
+Each ledger server is one Java process ([`server/LedgerServer.java`](../ledger/src/main/java/dev/seatline/ledger/server/LedgerServer.java)) with three **gRPC** services, defined in [`ledger.proto`](../ledger/src/main/proto/ledger.proto) with **Protocol Buffers**:
+
+- **Raft**, server to server. Each server keeps one long-lived stream open to each of the others and pushes Raft messages down it. If a peer is down or can't keep up, messages are dropped instead of piling up in memory; Raft already resends on the next heartbeat.
+- **Ledger**, for the API: `Write` (a seat command), `SeatMap` and `GetTicket` (linearizable reads through ReadIndex).
+- **Admin**, for the chaos panel and the benchmarks: status, crash, revive, cut off from other servers, heal.
+
+**Threads.** Every incoming call runs on its own **Java 21 virtual thread**, so thousands of fans waiting on a write cost almost nothing. All of them share **one lock** around the Raft node. That's slower than clever fine-grained locking in theory, but the Raft code stays single-threaded and easy to reason about. The lock is held briefly; the longest hold is the fsync, which batches everyone's writes (next paragraph).
+
+**Group commit.** A call takes the lock, hands its input to Raft (a message, a new command, a clock tick) and leaves. One flush thread then takes the lock, fsyncs the log **once** for everything that arrived since the last flush, and sends the outgoing messages. Under load, dozens of sales share one fsync. Replies to clients are held until that fsync has happened, so nobody is told "sold" for an entry that isn't on disk yet.
+
+**Client library** ([`client/LedgerClient.java`](../ledger/src/main/java/dev/seatline/ledger/client/LedgerClient.java)). Tries the server it last saw as leader, follows "not the leader, try node 3" hints, moves on when a server is down, and backs off briefly once it has tried all of them. Each `Session` has a random client id and numbers its writes; a retry reuses the number, so the ledger's exactly-once check catches it.
+
+**Metrics.** Each server serves Prometheus metrics on `/metrics`: term, commit index, whether it's leader, leader changes, elections started, writes by outcome and a write-latency histogram ([`server/Metrics.java`](../ledger/src/main/java/dev/seatline/ledger/server/Metrics.java)).
+
+Run a node: `java -cp ... dev.seatline.ledger.server.LedgerMain --id 1 --cluster 1=localhost:7001,2=localhost:7002,3=localhost:7003 --data data/node1 --metrics 9101`.
+
 ### How it's tested
 
 - **Simulator** ([`sim/Simulation.java`](../ledger/src/main/java/dev/seatline/ledger/sim/Simulation.java)): a fake world with a virtual clock and a network that drops, delays, duplicates, reorders and splits messages, plus crashes and power cuts. Everything random comes from one seed, so any failure replays exactly.
 - **Safety checker**: watches every simulated run and fails the moment there are two leaders in one term or two servers apply different commands at the same log position.
 - **Chaos runs** ([`sim/SeatChaos.java`](../ledger/src/main/java/dev/seatline/ledger/sim/SeatChaos.java)): five fans fight over six seats while servers crash and the network misbehaves. Every request and answer is recorded.
 - **Linearizability checker** ([`check/LinearizabilityChecker.java`](../ledger/src/main/java/dev/seatline/ledger/check/LinearizabilityChecker.java)): takes a chaos run's recorded history and searches for one order of all operations that matches real time and gives exactly the answers fans saw from a single, non-replicated ledger. If none exists, the run fails. Results: [`results/chaos.json`](results/chaos.json).
+- **Real cluster test** ([`LedgerClusterTest`](../ledger/src/test/java/dev/seatline/ledger/server/LedgerClusterTest.java)): three real servers on localhost talking gRPC with files on disk. Sells seats, retries a write with the same id, crashes the leader, stops a server and restarts it from disk, and cuts the leader off through the Admin API.
+- **Benchmarks** ([`bench/LedgerBench.java`](../ledger/src/main/java/dev/seatline/ledger/bench/LedgerBench.java), `scripts/bench.sh`): starts every server as its own JVM, measures writes per second and latency on 3 and 5 servers, and kills the leader with SIGKILL 20 times to time failover. Results: [`results/ledger-throughput.json`](results/ledger-throughput.json), [`results/ledger-failover.json`](results/ledger-failover.json).

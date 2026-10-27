@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-27",
+  "machine": "Intel(R) Xeon(R) Processor @ 2.10GHz, 4 cores, Linux amd64, Java 21.0.12.1",
+  "setup": "every node is its own JVM on the same machine, gRPC over localhost, write-ahead log fsynced to the ext4 file system before any reply",
+  "command": "scripts/bench.sh --nodes 3,5 --clients 64 --seconds 20 --warmup 10 --failovers 20",
+  "runs": [
+    {"nodes": 3, "concurrent_clients": 1, "measured_seconds": 20, "writes": 9936, "writes_per_sec": 497, "latency_ms": {"p50": 1.83, "p90": 2.55, "p99": 5.60, "p999": 11.29, "max": 58.29}},
+    {"nodes": 3, "concurrent_clients": 64, "measured_seconds": 20, "writes": 239298, "writes_per_sec": 11965, "latency_ms": {"p50": 4.98, "p90": 7.35, "p99": 11.66, "p999": 18.11, "max": 26.41}},
+    {"nodes": 5, "concurrent_clients": 1, "measured_seconds": 20, "writes": 7778, "writes_per_sec": 389, "latency_ms": {"p50": 2.25, "p90": 3.55, "p99": 7.32, "p999": 14.27, "max": 25.67}},
+    {"nodes": 5, "concurrent_clients": 64, "measured_seconds": 20, "writes": 196612, "writes_per_sec": 9831, "latency_ms": {"p50": 6.04, "p90": 8.69, "p99": 14.82, "p999": 31.16, "max": 62.19}}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-27",
+  "machine": "Intel(R) Xeon(R) Processor @ 2.10GHz, 4 cores, Linux amd64, Java 21.0.12.1",
+  "setup": "every node is its own JVM on the same machine, gRPC over localhost, write-ahead log fsynced to the ext4 file system before any reply",
+  "command": "scripts/bench.sh --nodes 3,5 --clients 64 --seconds 20 --warmup 10 --failovers 20",
+  "runs": [
+    {"nodes": 3, "rounds": 20, "new_leader_ms": {"median": 219, "p90": 249, "max": 282, "all": [232, 191, 208, 242, 219, 238, 223, 162, 188, 194, 231, 249, 282, 173, 280, 187, 161, 187, 227, 242]}, "client_write_pause_ms": {"median": 255, "p90": 298, "max": 309, "all": [274, 256, 222, 266, 230, 297, 260, 230, 251, 236, 309, 304, 291, 180, 298, 245, 211, 198, 255, 265]}},
+    {"nodes": 5, "rounds": 20, "new_leader_ms": {"median": 205, "p90": 222, "max": 350, "all": [218, 217, 350, 222, 177, 165, 218, 199, 165, 184, 222, 164, 216, 220, 259, 205, 179, 172, 180, 219]}, "client_write_pause_ms": {"median": 232, "p90": 277, "max": 357, "all": [228, 236, 357, 233, 193, 199, 283, 221, 178, 232, 249, 180, 266, 242, 248, 277, 205, 170, 193, 248]}}
+  ]
+}

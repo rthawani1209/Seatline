@@ -48,3 +48,16 @@ For a real company I'd use something proven (Postgres with serializable transact
 
 ### How would you scale to an 80,000-seat stadium?
 One Raft group serializes every write through one leader, so throughput is capped by that leader. Seats split cleanly by section, so I'd shard: several Raft groups, each owning some sections, with a small mapping of section to group. A hold within one section stays a single-group command. A hold across sections would need a cross-group transaction (two-phase commit) or simply a rule that one hold stays within one section.
+
+### How do the servers talk to each other, and how is it threaded?
+gRPC with Protocol Buffers. Each server keeps one stream open to each other server and pushes Raft messages down it; if a peer is down or slow, messages are dropped rather than queued, because Raft resends anyway. Every request runs on a Java 21 virtual thread, and they all share one lock around the Raft node. One lock sounds slow, but the Raft code stays single-threaded and easy to reason about, and a separate flush thread batches everyone's writes into one fsync (group commit), which is what actually sets throughput. Measured: **11,965 writes/sec on 3 servers and 9,831 on 5**, p99 11.7 ms and 14.8 ms with 64 concurrent clients ([`results/ledger-throughput.json`](results/ledger-throughput.json)). Five servers is slower than three because the leader waits for 3 of 5 instead of 2 of 3 and sends every entry to 4 followers instead of 2.
+
+**Follow-up: why not fine-grained locks?** The gain would be small: the expensive part is the fsync and the network round trip, not the in-memory Raft bookkeeping. A data race in consensus code means a double-sold seat, so simple and correct wins.
+
+### How long does failover take?
+I killed the leader process with SIGKILL 20 times on a 5-server cluster while a client kept writing. A new leader was elected after a median of **205 ms** (max 350 ms), and the client's longest pause between two successful writes was a median of **232 ms** ([`results/ledger-failover.json`](results/ledger-failover.json)). Most of that is on purpose: followers wait a random 150-300 ms without heartbeats before deciding the leader is gone. Shorter timeouts mean faster failover but more false alarms when the network or a GC pause slows heartbeats.
+
+### Tell me about a bug you hit.
+Two good ones from putting the ledger on a real network:
+1. **The benchmark showed about 600 writes/sec with 64 clients, roughly what 4 clients should manage.** The client library used a `synchronized` method around a blocking gRPC call. On Java 21, a virtual thread that blocks inside `synchronized` pins its carrier thread, and there's one carrier per CPU core, so only 4 of the 64 clients could ever be waiting at once. Switching to a `ReentrantLock` let all 64 run (later JDKs fix this pinning).
+2. **A server restarted after a crash never caught up.** The leader had opened a gRPC stream to it while it was down, and that stream stayed "not ready" forever even after the server came back, so every message was silently dropped. The fix: if a stream hasn't been writable for 250 ms, cancel it and open a new one. `LedgerClusterTest.aStoppedNodeRestartsFromDiskAndCatchesUp` covers it.

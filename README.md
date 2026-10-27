@@ -10,21 +10,37 @@ When thousands of fans hit "Buy" in the same second, ticketing sites tend to fal
 
 ```
 seatline/
-├── ledger/              Java seat ledger: Raft consensus, storage, simulator
-│   └── src/main/java/dev/seatline/ledger/
-│       ├── raft/        the Raft node (elections, replication, commit rule, snapshots,
-│       │                ReadIndex reads) and storage (write-ahead log with checksums)
-│       ├── seats/       the seat ledger: holds, sales, expiry, transfers, returns
-│       ├── check/       linearizability checker (Wing & Gong search with memoization)
-│       └── sim/         deterministic network/crash simulator and the chaos runs
+├── ledger/              Java seat ledger: Raft consensus, storage, gRPC server, simulator
+│   ├── src/main/java/dev/seatline/ledger/
+│   │   ├── raft/        the Raft node (elections, replication, commit rule, snapshots,
+│   │   │                ReadIndex reads) and storage (write-ahead log with checksums)
+│   │   ├── seats/       the seat ledger: holds, sales, expiry, transfers, returns
+│   │   ├── check/       linearizability checker (Wing & Gong search with memoization)
+│   │   ├── sim/         deterministic network/crash simulator and the chaos runs
+│   │   ├── server/      a ledger node on the network: gRPC services, metrics, main
+│   │   ├── client/      client library (finds the leader, retries safely)
+│   │   └── bench/       throughput and failover benchmarks
+│   └── src/main/proto/  ledger.proto: gRPC services and messages
 ├── backend/             Spring Boot API and waiting room          (coming)
 ├── frontend/            Next.js fan and organizer app              (coming)
 ├── loadtest/            Gatling "simulate a sell-out"              (coming)
 ├── infra/               Docker and AWS Terraform                   (coming)
-├── scripts/             check.sh (same checks as CI), chaos.sh (writes docs/results/chaos.json)
+├── scripts/             check.sh (same checks as CI), chaos.sh and bench.sh (write docs/results/)
 ├── docs/                ARCHITECTURE, INTERVIEW, CLAIMS (every claim and its proof), results/
 └── pom.xml              Maven build for the Java modules
 ```
+
+## Running a cluster
+
+```
+mvn -q -pl ledger compile dependency:build-classpath -Dmdep.outputFile=target/bench.cp
+CP="ledger/target/classes:$(cat ledger/target/bench.cp)"
+CLUSTER=1=localhost:7001,2=localhost:7002,3=localhost:7003
+for i in 1 2 3; do java -cp "$CP" dev.seatline.ledger.server.LedgerMain --id $i --cluster $CLUSTER --data data/node$i --metrics 910$i & done
+curl localhost:9101/metrics
+```
+
+`scripts/bench.sh` starts clusters like this itself and writes the throughput and failover results.
 
 ## Running the tests
 
