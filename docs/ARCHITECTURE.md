@@ -99,6 +99,16 @@ The API is what browsers and the door scanner talk to. It owns accounts, events 
 
 Every route is listed in [`SecurityConfig`](../backend/src/main/java/dev/seatline/api/security/SecurityConfig.java) with the roles allowed (fan, organizer, door staff, admin); anything not listed is refused. [`RouteAccessTest`](../backend/src/test/java/dev/seatline/api/security/RouteAccessTest.java) holds the same policy as a table, fails if any route is missing from it, and calls every route as nobody and as each role to check who gets in.
 
+### Venues, events and prices
+
+- A **venue** is a list of sections, each with rows of seats. Every seat gets a label (`FLOOR-A-1`: section, row, number), an x/y spot for drawing the map, and flags for **accessible** and **limited view**. Sections are laid out side by side so the frontend can draw the map without extra data. Code: [`venue/`](../backend/src/main/java/dev/seatline/api/venue/).
+- An **event** belongs to an organizer and starts as a **draft** that only its organizer (and admins) can see. Publishing puts it on sale.
+- **Tiers** set prices for groups of sections: standard, early bird (gone after its end date), student (needs a `.edu` email) and VIP.
+- **Promo codes** take a percentage off, with a use limit and an expiry. Each event also caps how many tickets one fan can buy.
+- **All-in prices**: the price on the seat map already includes the service fee and tax, worked out in whole cents in one place ([`Pricing`](../backend/src/main/java/dev/seatline/api/event/Pricing.java)): discount first, then fee on what's left, then tax on that. A **quote** checks every rule above for a basket of seats and returns the exact total checkout will charge.
+
+Prices and events live in Postgres. Which seats are free, held or sold is the ledger's job (next step: publishing an event creates it in the ledger).
+
 ### Data
 
 Postgres, with the schema in versioned Flyway migrations ([`db/migration`](../backend/src/main/resources/db/migration/)). All queries go through Spring Data JPA or `JdbcTemplate` with `?` placeholders, never string concatenation, so text from users can't change a query. Tests run against a real Postgres started in Docker by Testcontainers.

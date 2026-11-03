@@ -51,6 +51,17 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Parameterized queries only (Spring Data JPA and `JdbcTemplate` with `?` placeholders), schema managed by Flyway | `backend/src/main/resources/db/migration/` | | |
 | ✅ Testcontainers: API tests run against a real Postgres in Docker | [`TestDatabase`](../backend/src/test/java/dev/seatline/api/TestDatabase.java) | `mvn -pl backend -am test` | |
 
+## Venues, events and pricing
+
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Venues with seat maps: sections, rows, labels like `FLOOR-A-1`, x/y layout, accessible and limited-view seats | [`VenueService`](../backend/src/main/java/dev/seatline/api/venue/VenueService.java); `EventFlowTest.venueSeatMapHasLabelsLayoutAndAccessibility` | `mvn -pl backend -am test -Dtest=EventFlowTest -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Price tiers (standard, early bird that ends on a date, student needing a .edu email, VIP), each limited to some sections | [`EventService`](../backend/src/main/java/dev/seatline/api/event/EventService.java); `EventFlowTest.quotesApplyPromoCodesAndCheckTiers` | same | |
+| ✅ Promo codes (percent off, expiry) and a per-fan ticket limit | `EventService.addPromo`, `EventService.quote`; `EventFlowTest.quotesApplyPromoCodesAndCheckTiers`, `EventFlowTest.perFanLimitAndExpiredPromoCodesAreRefused` | same | 4 per fan in the test event |
+| 🛠 Promo code use limits (day 6): the limit is stored and checked, but uses are only counted once checkout exists | `promo_codes.max_uses` | | |
+| ✅ All-in pricing: fees and tax are in the price fans see, in whole cents | [`Pricing`](../backend/src/main/java/dev/seatline/api/event/Pricing.java); `PricingTest`, `EventFlowTest.draftsAreHiddenUntilPublishedAndPricesAreAllIn` | `mvn -pl backend -am test -Dtest='PricingTest,EventFlowTest' -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Organizers can only change their own events; drafts are hidden from the public | `EventService.requireOwner`, `getVisible`; `EventFlowTest.organizersCanOnlyTouchTheirOwnEvents` | same | |
+
 ## Still to build
 
-Waiting room, payments, tickets and scanner, accounts and security, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).
+Waiting room, payments, tickets and scanner, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).

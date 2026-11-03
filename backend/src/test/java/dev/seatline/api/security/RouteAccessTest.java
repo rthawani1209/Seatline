@@ -53,6 +53,14 @@ class RouteAccessTest {
         POLICY.put("POST /me/2fa/enable", SIGNED_IN);
         POLICY.put("POST /me/2fa/disable", SIGNED_IN);
         POLICY.put("PUT /admin/users/{id}/role", EnumSet.of(Role.ADMIN));
+        POLICY.put("POST /venues", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("GET /venues/{id}", null);
+        POLICY.put("POST /events", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("GET /events", null);
+        POLICY.put("GET /events/{id}", null);
+        POLICY.put("POST /events/{id}/publish", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("POST /events/{id}/promo-codes", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("POST /events/{id}/quote", SIGNED_IN);
     }
 
     @Autowired MockMvc mvc;

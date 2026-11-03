@@ -73,3 +73,7 @@ The policy lives in one place, and a test turns it into a table: every route tim
 
 ### Why tokens instead of sessions?
 The API is stateless, so any API server can handle any request and scaling is just adding servers. Tokens in an `Authorization` header also aren't sent automatically by the browser, which removes cross-site request forgery. The trade-off: a token can't be revoked before it expires, so they're short (1 hour), and a role change applies at the next sign-in.
+
+### How do you handle money?
+Whole cents in `long`s, never floating point, so $0.10 + $0.20 is exactly 30 cents. All the price math is in one small class with its own tests: promo discount first, then the fee on what's left, then tax, each rounded half up. The price on the seat map is already the all-in total, so there's no surprise at checkout, and the quote endpoint returns the exact number checkout will charge.
+
