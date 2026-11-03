@@ -52,7 +52,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/me").authenticated()
                         .requestMatchers(HttpMethod.POST, "/me/2fa/setup", "/me/2fa/enable", "/me/2fa/disable").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/admin/users/*/role").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/venues/*", "/events", "/events/*").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/venues/*", "/events", "/events/*", "/events/*/seats").permitAll()
                         .requestMatchers(HttpMethod.POST, "/venues", "/events").hasAnyRole("ORGANIZER", "ADMIN")
                         // ownership of the event is checked in EventService
                         .requestMatchers(HttpMethod.POST, "/events/*/publish", "/events/*/promo-codes").hasAnyRole("ORGANIZER", "ADMIN")

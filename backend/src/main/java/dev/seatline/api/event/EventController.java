@@ -74,6 +74,12 @@ class EventController {
         return events.getVisible(id, jwt == null ? null : CurrentUser.of(jwt));
     }
 
+    /** Free, held or sold for each seat. Only statuses: who holds or owns a seat stays private. */
+    @GetMapping("/events/{id}/seats")
+    List<EventService.SeatState> seats(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        return events.seatStates(id, jwt == null ? null : CurrentUser.of(jwt));
+    }
+
     @PostMapping("/events/{id}/publish")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void publish(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {

@@ -1,5 +1,6 @@
 package dev.seatline.api.web;
 
+import dev.seatline.ledger.client.LedgerClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -23,5 +24,11 @@ public class ErrorHandler {
             MethodArgumentTypeMismatchException.class})
     ResponseEntity<Map<String, String>> badInput(Exception e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "invalid_request"));
+    }
+
+    /** The ledger didn't answer in time (no leader, or too few nodes up). Safe for the client to retry. */
+    @ExceptionHandler(LedgerClient.UnavailableException.class)
+    ResponseEntity<Map<String, String>> ledgerDown(LedgerClient.UnavailableException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", "try_again"));
     }
 }

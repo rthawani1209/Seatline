@@ -7,6 +7,9 @@ import java.time.Duration;
 /**
  * @param jwtSecret base64 key for signing access tokens (at least 32 bytes). Empty in development,
  *     which makes the API generate one at startup, so tokens stop working after a restart.
+ * @param ledger the seat ledger's client addresses, {@code 1=host:port,2=host:port,...}
+ * @param ledgerTimeout how long one ledger call keeps retrying (through leader changes) before
+ *     the API gives up and answers 503
  */
 @ConfigurationProperties("seatline")
-public record SeatlineSettings(String jwtSecret, Duration tokenTtl) {}
+public record SeatlineSettings(String jwtSecret, Duration tokenTtl, String ledger, Duration ledgerTimeout) {}

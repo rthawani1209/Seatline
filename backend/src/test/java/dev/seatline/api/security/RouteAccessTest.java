@@ -1,6 +1,7 @@
 package dev.seatline.api.security;
 
 import dev.seatline.api.TestDatabase;
+import dev.seatline.api.TestLedger;
 import dev.seatline.api.account.Role;
 import dev.seatline.api.account.User;
 import dev.seatline.api.account.UserRepository;
@@ -35,7 +36,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestDatabase.class)
+@Import({TestDatabase.class, TestLedger.class})
 class RouteAccessTest {
 
     static final Set<Role> NOBODY = EnumSet.noneOf(Role.class);
@@ -58,6 +59,7 @@ class RouteAccessTest {
         POLICY.put("POST /events", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("GET /events", null);
         POLICY.put("GET /events/{id}", null);
+        POLICY.put("GET /events/{id}/seats", null);
         POLICY.put("POST /events/{id}/publish", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/promo-codes", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/quote", SIGNED_IN);

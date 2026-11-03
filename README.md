@@ -27,6 +27,7 @@ seatline/
 │       ├── security/    who may call which route, access tokens
 │       ├── venue/       venues and seat maps (sections, rows, accessible and limited-view seats)
 │       ├── event/       events, price tiers, promo codes, all-in pricing and quotes
+│       ├── seats/       the API's connection to the seat ledger
 │       └── web/         error responses
 ├── frontend/            Next.js fan and organizer app              (coming)
 ├── loadtest/            Gatling "simulate a sell-out"              (coming)

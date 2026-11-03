@@ -1,7 +1,11 @@
 package dev.seatline.api.event;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dev.seatline.api.seats.Seats;
 import dev.seatline.api.venue.VenueService;
+import dev.seatline.ledger.seats.SeatCommand;
+import dev.seatline.ledger.seats.SeatLedger.SeatStatus;
+import dev.seatline.ledger.seats.SeatResult;
 import dev.seatline.api.web.ApiException;
 import dev.seatline.api.web.CurrentUser;
 import org.springframework.http.HttpStatus;
@@ -50,11 +54,13 @@ public class EventService {
     private final JdbcClient db;
     private final VenueService venues;
     private final Clock clock;
+    private final Seats seats;
 
-    public EventService(JdbcClient db, VenueService venues, Clock clock) {
+    public EventService(JdbcClient db, VenueService venues, Clock clock, Seats seats) {
         this.db = db;
         this.venues = venues;
         this.clock = clock;
+        this.seats = seats;
     }
 
     @Transactional
@@ -153,7 +159,30 @@ public class EventService {
         if (e.tiers().isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "no_tiers");
         }
+        // the ledger first: once it has the event, seats can be held, so only then go on sale.
+        // A retry after a crash between the two steps finds the event already there, which is fine.
+        List<String> sellable = db.sql("""
+                select distinct st.label from seats st
+                join tier_sections ts on ts.section_id = st.section_id
+                join tiers t on t.id = ts.tier_id
+                where t.event_id = ? order by st.label""").param(eventId).query(String.class).list();
+        SeatResult created = seats.write(new SeatCommand.CreateEvent(eventId.toString(), sellable, e.perFanLimit()));
+        if (!created.ok() && created.outcome() != SeatResult.Outcome.ALREADY_EXISTS) {
+            throw new IllegalStateException("ledger refused event " + eventId + ": " + created.outcome());
+        }
         db.sql("update events set status = 'ON_SALE' where id = ?").param(eventId).update();
+    }
+
+    public record SeatState(String seat, SeatStatus status) {}
+
+    /** Live status of every seat on sale for an event, straight from the ledger. */
+    public List<SeatState> seatStates(UUID eventId, CurrentUser viewer) {
+        Event e = getVisible(eventId, viewer);
+        Map<String, SeatStatus> live = e.status().equals("DRAFT") ? null : seats.statuses(eventId.toString());
+        if (live == null) {
+            return List.of();
+        }
+        return live.entrySet().stream().map(s -> new SeatState(s.getKey(), s.getValue())).toList();
     }
 
     @Transactional

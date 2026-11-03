@@ -60,6 +60,7 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Promo codes (percent off, expiry) and a per-fan ticket limit | `EventService.addPromo`, `EventService.quote`; `EventFlowTest.quotesApplyPromoCodesAndCheckTiers`, `EventFlowTest.perFanLimitAndExpiredPromoCodesAreRefused` | same | 4 per fan in the test event |
 | 🛠 Promo code use limits (day 6): the limit is stored and checked, but uses are only counted once checkout exists | `promo_codes.max_uses` | | |
 | ✅ All-in pricing: fees and tax are in the price fans see, in whole cents | [`Pricing`](../backend/src/main/java/dev/seatline/api/event/Pricing.java); `PricingTest`, `EventFlowTest.draftsAreHiddenUntilPublishedAndPricesAreAllIn` | `mvn -pl backend -am test -Dtest='PricingTest,EventFlowTest' -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Publishing puts the event's seats in the Raft ledger; the live seat map is read from the ledger, never from Postgres | `EventService.publish`, [`Seats`](../backend/src/main/java/dev/seatline/api/seats/Seats.java); `EventFlowTest.publishingPutsTheSeatsInTheLedger` (real ledger node in the test) | `mvn -pl backend -am test -Dtest=EventFlowTest -Dsurefire.failIfNoSpecifiedTests=false` | |
 | ✅ Organizers can only change their own events; drafts are hidden from the public | `EventService.requireOwner`, `getVisible`; `EventFlowTest.organizersCanOnlyTouchTheirOwnEvents` | same | |
 
 ## Still to build

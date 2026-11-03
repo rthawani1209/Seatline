@@ -3,8 +3,11 @@ package dev.seatline.api.event;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.seatline.api.TestDatabase;
+import dev.seatline.api.TestLedger;
 import dev.seatline.api.TestUsers;
 import dev.seatline.api.account.Role;
+import dev.seatline.api.seats.Seats;
+import dev.seatline.ledger.seats.SeatCommand;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +20,7 @@ import org.springframework.test.web.servlet.ResultActions;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,12 +31,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import({TestDatabase.class, TestUsers.class})
+@Import({TestDatabase.class, TestLedger.class, TestUsers.class})
 class EventFlowTest {
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired TestUsers testUsers;
+    @Autowired Seats ledger;
 
     String organizer;
     String venueId;
@@ -162,6 +167,25 @@ class EventFlowTest {
         post("/events/" + eventId + "/quote", fan, """
                 {"items": [{"seat": "FLOOR-B-1", "tierId": "%s"}], "promoCode": "LASTWEEK"}""".formatted(floorTier))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_promo_code"));
+    }
+
+    @Test
+    void publishingPutsTheSeatsInTheLedger() throws Exception {
+        String eventId = createEvent();
+        mvc.perform(get("/events/" + eventId + "/seats")).andExpect(status().isNotFound());
+        post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isNoContent());
+
+        // every seat covered by a tier, all free, read back from the ledger
+        JsonNode seats = body(mvc.perform(get("/events/" + eventId + "/seats")).andExpect(status().isOk()));
+        assertThat(seats).hasSize(11);
+        assertThat(seats).allSatisfy(s -> assertThat(s.get("status").asText()).isEqualTo("FREE"));
+        assertThat(seats.findValuesAsText("seat")).contains("FLOOR-A-1", "BALCONY-A-3");
+
+        // a held seat shows up as held to everyone
+        ledger.write(new SeatCommand.Hold(eventId, List.of("FLOOR-A-2"), "fan-1", "h-" + UUID.randomUUID(), 60_000));
+        JsonNode after = body(mvc.perform(get("/events/" + eventId + "/seats")));
+        assertThat(after.findValuesAsText("status")).containsOnlyOnce("HELD");
+        assertThat(after.toString()).doesNotContain("fan-1");
     }
 
     static String tierId(JsonNode event, String name) {

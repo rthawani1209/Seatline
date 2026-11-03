@@ -22,3 +22,6 @@ seatline:
   # 32+ random bytes, base64. Required outside development; see SecurityConfig.
   jwt-secret: ${SEATLINE_JWT_SECRET:}
   token-ttl: 1h
+  # client ports of the seat ledger nodes
+  ledger: ${SEATLINE_LEDGER:1=localhost:8001,2=localhost:8002,3=localhost:8003}
+  ledger-timeout: 5s

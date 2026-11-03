@@ -3,6 +3,7 @@ package dev.seatline.api.account;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.seatline.api.TestDatabase;
+import dev.seatline.api.TestLedger;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -24,7 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestDatabase.class)
+@Import({TestDatabase.class, TestLedger.class})
 class AccountFlowTest {
 
     static final String PASSWORD = "correct horse battery";

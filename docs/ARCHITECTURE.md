@@ -107,7 +107,12 @@ Every route is listed in [`SecurityConfig`](../backend/src/main/java/dev/seatlin
 - **Promo codes** take a percentage off, with a use limit and an expiry. Each event also caps how many tickets one fan can buy.
 - **All-in prices**: the price on the seat map already includes the service fee and tax, worked out in whole cents in one place ([`Pricing`](../backend/src/main/java/dev/seatline/api/event/Pricing.java)): discount first, then fee on what's left, then tax on that. A **quote** checks every rule above for a basket of seats and returns the exact total checkout will charge.
 
-Prices and events live in Postgres. Which seats are free, held or sold is the ledger's job (next step: publishing an event creates it in the ledger).
+Prices and events live in Postgres. Which seats are free, held or sold is only ever decided by the ledger:
+
+- **Publishing** an event first creates it in the ledger with every seat a tier covers, then marks it on sale in Postgres. If the API dies between the two, publishing again finds the event already in the ledger and carries on.
+- **The live seat map** (`GET /events/{id}/seats`) reads straight from the ledger through ReadIndex, so it's never stale. It returns only free, held or sold; who holds or owns a seat isn't shown.
+- **Talking to the ledger** goes through [`Seats`](../backend/src/main/java/dev/seatline/api/seats/Seats.java): a fixed pool of 64 ledger sessions. The ledger remembers the last answer for every client id it has seen, so reusing sessions keeps that memory bounded. If no leader answers within 5 seconds the API replies `503 try_again`.
+- **Tests** start a real one-node ledger inside the test JVM ([`TestLedger`](../backend/src/test/java/dev/seatline/api/TestLedger.java)).
 
 ### Data
 
