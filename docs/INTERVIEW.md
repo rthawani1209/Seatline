@@ -61,3 +61,15 @@ I killed the leader process with SIGKILL 20 times on a 5-server cluster while a 
 Two good ones from putting the ledger on a real network:
 1. **The benchmark showed about 600 writes/sec with 64 clients, roughly what 4 clients should manage.** The client library used a `synchronized` method around a blocking gRPC call. On Java 21, a virtual thread that blocks inside `synchronized` pins its carrier thread, and there's one carrier per CPU core, so only 4 of the 64 clients could ever be waiting at once. Switching to a `ReentrantLock` let all 64 run (later JDKs fix this pinning).
 2. **A server restarted after a crash never caught up.** The leader had opened a gRPC stream to it while it was down, and that stream stayed "not ready" forever even after the server came back, so every message was silently dropped. The fix: if a stream hasn't been writable for 250 ms, cancel it and open a new one. `LedgerClusterTest.aStoppedNodeRestartsFromDiskAndCatchesUp` covers it.
+
+### How do you store passwords?
+Argon2id through Spring Security. It's deliberately slow and needs a lot of memory per guess, so even with the hashes an attacker can only try a few guesses per second per core, and GPUs don't help much. Each hash has its own random salt, so two people with the same password get different hashes. Login also runs a hash for unknown emails, so timing doesn't leak which emails have accounts.
+
+### How do you stop password guessing?
+Three layers: Argon2 makes each offline guess expensive, login is limited to 5 failures per account and 20 per address in 15 minutes, and users can turn on two-factor codes so a password alone isn't enough. A used two-factor code is remembered (by its time step) so someone watching over your shoulder can't reuse it.
+
+### How do you know every endpoint has the right permissions?
+The policy lives in one place, and a test turns it into a table: every route times every role (plus nobody), expecting "allowed" or "refused". The test also lists the routes Spring actually serves and fails if one isn't in the table, so a new endpoint can't ship without someone deciding who may call it. Anything not listed is denied by default. I checked the test bites by opening the admin route to any signed-in user; it failed with exactly the three roles that shouldn't get in.
+
+### Why tokens instead of sessions?
+The API is stateless, so any API server can handle any request and scaling is just adding servers. Tokens in an `Authorization` header also aren't sent automatically by the browser, which removes cross-site request forgery. The trade-off: a token can't be revoked before it expires, so they're short (1 hour), and a role change applies at the next sign-in.

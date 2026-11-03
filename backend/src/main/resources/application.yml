@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: seatline-api
+  datasource:
+    url: ${SEATLINE_DB_URL:jdbc:postgresql://localhost:5432/seatline}
+    username: ${SEATLINE_DB_USER:seatline}
+    password: ${SEATLINE_DB_PASSWORD:seatline}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+
+seatline:
+  # 32+ random bytes, base64. Required outside development; see SecurityConfig.
+  jwt-secret: ${SEATLINE_JWT_SECRET:}
+  token-ttl: 1h

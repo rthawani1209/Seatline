@@ -39,6 +39,18 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | 🛠 Every sale has a payment, checked end to end through the backend (day 6, day 10) | | | |
 | 🛠 Gatling: 10,000 simulated fans, throughput and p99 purchase latency, 0 double-sold (day 11) | | | [X] fans, [X] ms p99 |
 
+## Accounts and security
+
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Passwords hashed with Argon2id | `SecurityConfig.passwordEncoder`; `AccountFlowTest.registerVerifyLoginAndSeeYourself` checks the stored hash starts with `$argon2id$` | `mvn -pl backend -am test -Dtest=AccountFlowTest -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Email verification before login; tokens stored hashed, single use, expire in 24 h | [`AccountService`](../backend/src/main/java/dev/seatline/api/account/AccountService.java); `AccountFlowTest.emailMustBeVerifiedAndTokensWorkOnce` | same | |
+| ✅ Optional two-factor codes (TOTP, RFC 6238), codes can't be replayed | [`Totp`](../backend/src/main/java/dev/seatline/api/account/Totp.java) (checked against the RFC's test vectors in `TotpTest`); `AccountFlowTest.twoFactorIsRequiredOnceEnabledAndCodesCantBeReused` | same | |
+| ✅ Login rate limits per account and per address | [`LoginLimiter`](../backend/src/main/java/dev/seatline/api/account/LoginLimiter.java); `AccountFlowTest.repeatedFailuresAreRateLimited` | same | 5 failures per account, 20 per address, per 15 min |
+| ✅ Role-based access (fan, organizer, door staff, admin) on every route, tested per route and role; unlisted routes are refused | [`SecurityConfig`](../backend/src/main/java/dev/seatline/api/security/SecurityConfig.java), [`RouteAccessTest`](../backend/src/test/java/dev/seatline/api/security/RouteAccessTest.java) (making the admin route open to any signed-in user fails it) | `mvn -pl backend -am test -Dtest=RouteAccessTest -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Parameterized queries only (Spring Data JPA and `JdbcTemplate` with `?` placeholders), schema managed by Flyway | `backend/src/main/resources/db/migration/` | | |
+| ✅ Testcontainers: API tests run against a real Postgres in Docker | [`TestDatabase`](../backend/src/test/java/dev/seatline/api/TestDatabase.java) | `mvn -pl backend -am test` | |
+
 ## Still to build
 
 Waiting room, payments, tickets and scanner, accounts and security, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).

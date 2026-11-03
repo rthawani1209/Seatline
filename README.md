@@ -21,7 +21,11 @@ seatline/
 │   │   ├── client/      client library (finds the leader, retries safely)
 │   │   └── bench/       throughput and failover benchmarks
 │   └── src/main/proto/  ledger.proto: gRPC services and messages
-├── backend/             Spring Boot API and waiting room          (coming)
+├── backend/             Spring Boot API: accounts, roles, events (waiting room and checkout coming)
+│   └── src/main/java/dev/seatline/api/
+│       ├── account/     sign-up, email verification, login, two-factor codes, login rate limits
+│       ├── security/    who may call which route, access tokens
+│       └── web/         error responses
 ├── frontend/            Next.js fan and organizer app              (coming)
 ├── loadtest/            Gatling "simulate a sell-out"              (coming)
 ├── infra/               Docker and AWS Terraform                   (coming)
@@ -44,7 +48,7 @@ curl localhost:9101/metrics
 
 ## Running the tests
 
-You need Java 21 and Maven 3.9+.
+You need Java 21, Maven 3.9+ and Docker (the API tests start a real Postgres with Testcontainers).
 
 ```
 mvn test

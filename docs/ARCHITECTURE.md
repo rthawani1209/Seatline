@@ -81,3 +81,24 @@ Run a node: `java -cp ... dev.seatline.ledger.server.LedgerMain --id 1 --cluster
 - **Linearizability checker** ([`check/LinearizabilityChecker.java`](../ledger/src/main/java/dev/seatline/ledger/check/LinearizabilityChecker.java)): takes a chaos run's recorded history and searches for one order of all operations that matches real time and gives exactly the answers fans saw from a single, non-replicated ledger. If none exists, the run fails. Results: [`results/chaos.json`](results/chaos.json).
 - **Real cluster test** ([`LedgerClusterTest`](../ledger/src/test/java/dev/seatline/ledger/server/LedgerClusterTest.java)): three real servers on localhost talking gRPC with files on disk. Sells seats, retries a write with the same id, crashes the leader, stops a server and restarts it from disk, and cuts the leader off through the Admin API.
 - **Benchmarks** ([`bench/LedgerBench.java`](../ledger/src/main/java/dev/seatline/ledger/bench/LedgerBench.java), `scripts/bench.sh`): starts every server as its own JVM, measures writes per second and latency on 3 and 5 servers, and kills the leader with SIGKILL 20 times to time failover. Results: [`results/ledger-throughput.json`](results/ledger-throughput.json), [`results/ledger-failover.json`](results/ledger-failover.json).
+
+
+## The API (Spring Boot)
+
+The API is what browsers and the door scanner talk to. It owns accounts, events and prices in Postgres, and asks the seat ledger for anything that touches who owns a seat. Code: [`backend/`](../backend/src/main/java/dev/seatline/api/).
+
+### Accounts and sign-in
+
+- **Passwords** are hashed with **Argon2id**, a hash designed to be slow and memory-hungry so stolen hashes are expensive to crack. Logging in with an unknown email still runs a hash, so response time doesn't reveal who has an account, and both cases get the same `bad_credentials` answer.
+- **Email verification**: sign-up emails a random code; only its SHA-256 is stored, it works once and expires after 24 hours. Until it's used, login is refused.
+- **Two-factor codes** (optional): the six-digit codes from an authenticator app (TOTP, RFC 6238), written out in [`Totp.java`](../backend/src/main/java/dev/seatline/api/account/Totp.java) and checked against the RFC's own test values. A code is accepted for one 30-second step either side of now, and never twice.
+- **Rate limits**: 5 failed logins per account or 20 per address within 15 minutes, then refused until old failures age out. In memory for now; it moves to Redis with the waiting room so all API servers share the counts.
+- **Tokens**: a successful login returns a signed token (JWT, HS256, 1 hour) carrying the user id and role. Clients send it as `Authorization: Bearer ...`. Because it's not a cookie, a malicious site can't make the browser send it, so there's no cross-site request forgery to defend against.
+
+### Who may call what
+
+Every route is listed in [`SecurityConfig`](../backend/src/main/java/dev/seatline/api/security/SecurityConfig.java) with the roles allowed (fan, organizer, door staff, admin); anything not listed is refused. [`RouteAccessTest`](../backend/src/test/java/dev/seatline/api/security/RouteAccessTest.java) holds the same policy as a table, fails if any route is missing from it, and calls every route as nobody and as each role to check who gets in.
+
+### Data
+
+Postgres, with the schema in versioned Flyway migrations ([`db/migration`](../backend/src/main/resources/db/migration/)). All queries go through Spring Data JPA or `JdbcTemplate` with `?` placeholders, never string concatenation, so text from users can't change a query. Tests run against a real Postgres started in Docker by Testcontainers.
