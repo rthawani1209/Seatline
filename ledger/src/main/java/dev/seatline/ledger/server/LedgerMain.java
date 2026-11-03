@@ -14,12 +14,22 @@ import java.util.concurrent.CountDownLatch;
  * <pre>
  * java -cp ... dev.seatline.ledger.server.LedgerMain \
  *     --id 1 --cluster 1=localhost:7001,2=localhost:7002,3=localhost:7003 \
- *     --data data/node1 --metrics 9101
+ *     --port 8001 --data data/node1 --metrics 9101
  * </pre>
  *
- * Each flag can also come from the environment (SEATLINE_ID, SEATLINE_CLUSTER, SEATLINE_DATA,
- * SEATLINE_METRICS), which is how the Docker image is configured. The node listens on the port of
- * its own entry in the cluster list.
+ * <ul>
+ *   <li>{@code --cluster}: every node's peer address. This node takes Raft traffic on the port of
+ *       its own entry.
+ *   <li>{@code --port}: where the API reaches the Ledger service.
+ *   <li>{@code --bind}: interface to listen on, default 127.0.0.1. Set it (e.g. 0.0.0.0 in Docker
+ *       Compose) only where the network around the nodes is private.
+ *   <li>{@code --admin}: also serve the Admin service (crash, partition) on the peer port. Off by
+ *       default.
+ * </ul>
+ *
+ * Each flag can also come from the environment (SEATLINE_ID, SEATLINE_CLUSTER, SEATLINE_PORT,
+ * SEATLINE_DATA, SEATLINE_BIND, SEATLINE_ADMIN, SEATLINE_METRICS), which is how the Docker image is
+ * configured.
  */
 public final class LedgerMain {
 
@@ -28,17 +38,16 @@ public final class LedgerMain {
         int id = Integer.parseInt(setting(flags, "id"));
         Map<Integer, String> cluster = parseCluster(setting(flags, "cluster"));
         Path data = Path.of(setting(flags, "data"));
+        int clientPort = Integer.parseInt(setting(flags, "port"));
+        String bind = flags.getOrDefault("bind", env("bind", "127.0.0.1"));
+        boolean admin = Boolean.parseBoolean(flags.getOrDefault("admin", env("admin", "false")));
         int metricsPort = Integer.parseInt(flags.getOrDefault("metrics", env("metrics", "0")));
 
-        String self = cluster.get(id);
-        if (self == null) {
-            throw new IllegalArgumentException("node " + id + " isn't in the cluster list " + cluster);
-        }
-        int port = Integer.parseInt(self.substring(self.lastIndexOf(':') + 1));
-
-        LedgerServer server = new LedgerServer(new LedgerServer.Config(id, cluster, data, port, RaftConfig.DEFAULT));
-        int served = server.metrics().serve(metricsPort);
-        System.out.printf("ledger node %d listening on %d, metrics on %d, data in %s%n", id, server.port(), served, data);
+        LedgerServer server = new LedgerServer(
+                new LedgerServer.Config(id, cluster, data, bind, clientPort, admin, RaftConfig.DEFAULT));
+        int served = server.metrics().serve(bind, metricsPort);
+        System.out.printf("ledger node %d on %s: clients %d, peers %d%s, metrics %d, data in %s%n", id, bind,
+                server.clientPort(), server.peerPort(), admin ? " (admin on)" : "", served, data);
 
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -63,11 +72,18 @@ public final class LedgerMain {
 
     private static Map<String, String> parseFlags(String[] args) {
         Map<String, String> flags = new HashMap<>();
-        for (int i = 0; i + 1 < args.length; i += 2) {
+        for (int i = 0; i < args.length; i++) {
             if (!args[i].startsWith("--")) {
                 throw new IllegalArgumentException("expected a --flag, got " + args[i]);
             }
-            flags.put(args[i].substring(2), args[i + 1]);
+            String name = args[i].substring(2);
+            if (name.equals("admin")) {
+                flags.put(name, "true"); // a switch, takes no value
+            } else if (i + 1 < args.length) {
+                flags.put(name, args[++i]);
+            } else {
+                throw new IllegalArgumentException("--" + name + " needs a value");
+            }
         }
         return flags;
     }

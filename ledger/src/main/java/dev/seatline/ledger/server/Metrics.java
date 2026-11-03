@@ -130,10 +130,10 @@ public final class Metrics implements RaftObserver {
         s.append(name).append(labels).append(' ').append(value).append('\n');
     }
 
-    /** Serves {@code /metrics} on the given port (0 picks a free one). Returns the port. */
-    public int serve(int port) {
+    /** Serves {@code /metrics} on the given interface and port (0 picks a free one). Returns the port. */
+    public int serve(String bind, int port) {
         try {
-            http = HttpServer.create(new InetSocketAddress(port), 0);
+            http = HttpServer.create(new InetSocketAddress(bind, port), 0);
         } catch (IOException e) {
             throw new IllegalStateException("can't serve metrics on port " + port, e);
         }

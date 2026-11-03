@@ -4,6 +4,7 @@ import com.google.protobuf.ByteString;
 import dev.seatline.ledger.client.LedgerClient;
 import dev.seatline.ledger.raft.RaftConfig;
 import dev.seatline.ledger.rpc.AdminGrpc;
+import dev.seatline.ledger.rpc.Empty;
 import dev.seatline.ledger.rpc.LedgerGrpc;
 import dev.seatline.ledger.rpc.PartitionRequest;
 import dev.seatline.ledger.rpc.Status;
@@ -19,6 +20,7 @@ import dev.seatline.ledger.seats.SeatRequest;
 import dev.seatline.ledger.seats.SeatResult;
 import dev.seatline.ledger.seats.SeatResult.Outcome;
 import io.grpc.ManagedChannel;
+import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +39,7 @@ import java.util.TreeMap;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Three real nodes on localhost talking gRPC, with real files on disk. */
 @Timeout(60)
@@ -45,7 +48,8 @@ class LedgerClusterTest {
     @TempDir
     Path dir;
 
-    final Map<Integer, String> cluster = new TreeMap<>();
+    final Map<Integer, String> cluster = new TreeMap<>(); // peer addresses
+    final Map<Integer, String> clients = new TreeMap<>(); // client addresses
     final Map<Integer, LedgerServer> servers = new TreeMap<>();
     final List<ManagedChannel> channels = new ArrayList<>();
     LedgerClient client;
@@ -54,17 +58,19 @@ class LedgerClusterTest {
     void start() throws IOException {
         for (int id = 1; id <= 3; id++) {
             cluster.put(id, "127.0.0.1:" + freePort());
+            clients.put(id, "127.0.0.1:" + freePort());
         }
         for (int id : cluster.keySet()) {
             servers.put(id, startNode(id));
         }
-        client = new LedgerClient(cluster, Duration.ofSeconds(15));
+        client = new LedgerClient(clients, Duration.ofSeconds(15));
     }
 
     LedgerServer startNode(int id) {
-        String address = cluster.get(id);
+        String address = clients.get(id);
         int port = Integer.parseInt(address.substring(address.lastIndexOf(':') + 1));
-        return new LedgerServer(new LedgerServer.Config(id, cluster, dir.resolve("node" + id), port, RaftConfig.DEFAULT));
+        return new LedgerServer(new LedgerServer.Config(id, cluster, dir.resolve("node" + id), "127.0.0.1", port,
+                true, RaftConfig.DEFAULT));
     }
 
     @AfterEach
@@ -98,7 +104,7 @@ class LedgerClusterTest {
     void retriedWriteIsAppliedOnce() {
         client.session().write(new CreateEvent("gig", List.of("A1", "A2"), 4));
         int leaderId = leader().status().getId();
-        LedgerGrpc.LedgerBlockingStub stub = LedgerGrpc.newBlockingStub(channel(leaderId));
+        LedgerGrpc.LedgerBlockingStub stub = LedgerGrpc.newBlockingStub(channel(clients.get(leaderId)));
 
         // same client id and seq twice, as if the first reply had been lost
         byte[] bytes = SeatCodec.encode(new SeatRequest(42, 1, new Hold("gig", List.of("A1"), "jordan", "h1", 60_000)));
@@ -164,10 +170,33 @@ class LedgerClusterTest {
         await(() -> !old.isLeader()); // check-quorum: it can't hear a majority, so it stops leading
 
         for (int id : cluster.keySet()) {
-            admin(id).heal(dev.seatline.ledger.rpc.Empty.getDefaultInstance());
+            admin(id).heal(Empty.getDefaultInstance());
         }
         long commit = leader().status().getCommitIndex();
         await(() -> old.status().getLastApplied() >= commit);
+    }
+
+    @Test
+    void adminIsOffUnlessAskedForAndPortsKeepTheirServices() throws IOException {
+        Map<Integer, String> solo = Map.of(9, "127.0.0.1:" + freePort());
+        int clientPort = freePort();
+        try (LedgerServer node = new LedgerServer(new LedgerServer.Config(9, solo, dir.resolve("solo"), "127.0.0.1",
+                clientPort, false, RaftConfig.DEFAULT))) {
+            ManagedChannel peerPort = channel(solo.get(9));
+            ManagedChannel clientSide = channel("127.0.0.1:" + clientPort);
+
+            assertThatThrownBy(() -> AdminGrpc.newBlockingStub(peerPort).crash(Empty.getDefaultInstance()))
+                    .isInstanceOfSatisfying(StatusRuntimeException.class,
+                            e -> assertThat(e.getStatus().getCode()).isEqualTo(io.grpc.Status.Code.UNIMPLEMENTED));
+            assertThat(node.status().getUp()).isTrue();
+
+            // clients can't reach Raft or Admin, and peers' port doesn't take client writes
+            WriteRequest write = WriteRequest.getDefaultInstance();
+            assertThatThrownBy(() -> AdminGrpc.newBlockingStub(clientSide).crash(Empty.getDefaultInstance()))
+                    .isInstanceOf(StatusRuntimeException.class);
+            assertThatThrownBy(() -> LedgerGrpc.newBlockingStub(peerPort).write(write))
+                    .isInstanceOf(StatusRuntimeException.class);
+        }
     }
 
     @Test
@@ -194,14 +223,14 @@ class LedgerClusterTest {
         return found[0];
     }
 
-    ManagedChannel channel(int id) {
-        ManagedChannel c = NettyChannelBuilder.forTarget(cluster.get(id)).usePlaintext().build();
+    ManagedChannel channel(String address) {
+        ManagedChannel c = NettyChannelBuilder.forTarget(address).usePlaintext().build();
         channels.add(c);
         return c;
     }
 
     AdminGrpc.AdminBlockingStub admin(int id) {
-        return AdminGrpc.newBlockingStub(channel(id));
+        return AdminGrpc.newBlockingStub(channel(cluster.get(id)));
     }
 
     static void await(BooleanSupplier condition) {

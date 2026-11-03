@@ -50,7 +50,8 @@ public final class LedgerBench {
     private final Path work;
     private final String classpath = System.getProperty("java.class.path");
     private final String java = ProcessHandle.current().info().command().orElse("java");
-    private final Map<Integer, String> cluster = new TreeMap<>();
+    private final Map<Integer, String> cluster = new TreeMap<>(); // peer (and admin) addresses
+    private final Map<Integer, String> clientAddresses = new TreeMap<>(); // client addresses
     private final Map<Integer, Process> processes = new TreeMap<>();
     private final Map<Integer, ManagedChannel> adminChannels = new TreeMap<>();
 
@@ -103,6 +104,7 @@ public final class LedgerBench {
     private void startCluster(int n) throws IOException, InterruptedException {
         for (int id = 1; id <= n; id++) {
             cluster.put(id, "127.0.0.1:" + freePort());
+            clientAddresses.put(id, "127.0.0.1:" + freePort());
         }
         for (int id : cluster.keySet()) {
             startNode(id);
@@ -115,7 +117,8 @@ public final class LedgerBench {
         String spec = String.join(",", cluster.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).toList());
         ProcessBuilder pb = new ProcessBuilder(java, "-Xmx384m", "-cp", classpath,
                 "dev.seatline.ledger.server.LedgerMain",
-                "--id", String.valueOf(id), "--cluster", spec, "--data", work.resolve("node" + id).toString());
+                "--id", String.valueOf(id), "--cluster", spec, "--data", work.resolve("node" + id).toString(),
+                "--port", clientAddresses.get(id).substring(clientAddresses.get(id).lastIndexOf(':') + 1), "--admin");
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(work.resolve("node" + id + ".log").toFile()));
         processes.put(id, pb.start());
@@ -177,7 +180,7 @@ public final class LedgerBench {
         }
         System.out.printf("%d nodes, %d clients: warming up %ds, measuring %ds%n", n, clients, warmupSeconds, seconds);
 
-        try (LedgerClient client = new LedgerClient(cluster)) {
+        try (LedgerClient client = new LedgerClient(clientAddresses)) {
             client.session().write(new CreateEvent(event, seats, seatsPerClient));
             long measureFrom = System.nanoTime() + TimeUnit.SECONDS.toNanos(warmupSeconds);
             long stopAt = measureFrom + TimeUnit.SECONDS.toNanos(seconds);
@@ -241,7 +244,7 @@ public final class LedgerBench {
         String event = "failover";
         List<Long> electionMs = new ArrayList<>();
         List<Long> gapMs = new ArrayList<>();
-        try (LedgerClient client = new LedgerClient(cluster, Duration.ofSeconds(30))) {
+        try (LedgerClient client = new LedgerClient(clientAddresses, Duration.ofSeconds(30))) {
             client.session().write(new CreateEvent(event, List.of("F1"), 1));
             for (int round = 1; round <= rounds; round++) {
                 // a client writing nonstop; we record when each write finished

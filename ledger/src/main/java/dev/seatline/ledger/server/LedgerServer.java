@@ -30,6 +30,7 @@ import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -69,16 +70,36 @@ public final class LedgerServer implements AutoCloseable {
     public static final int TICK_MS = 10;
     private static final long CLIENT_WAIT_MS = 5_000;
 
-    public record Config(int id, Map<Integer, String> cluster, Path dataDir, int port, RaftConfig raft) {
+    /**
+     * @param cluster every node's peer address ({@code host:port}), used for Raft traffic and, when
+     *     enabled, the Admin service; this node listens on the port of its own entry
+     * @param bind the interface both ports listen on. Defaults to localhost: nothing on these ports
+     *     is authenticated yet (mTLS between nodes comes with the deployment), so a deployment has
+     *     to opt in to listening on a real network
+     * @param clientPort port for the Ledger service, which the API calls
+     * @param admin serve the Admin service (crash, revive, partition). Off unless asked for; the
+     *     chaos panel reaches it through the authenticated API
+     */
+    public record Config(int id, Map<Integer, String> cluster, Path dataDir, String bind, int clientPort,
+                         boolean admin, RaftConfig raft) {
         public int[] members() {
             return cluster.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
+        }
+
+        public int peerPort() {
+            String self = cluster.get(id);
+            if (self == null) {
+                throw new IllegalArgumentException("node " + id + " isn't in the cluster list " + cluster);
+            }
+            return Integer.parseInt(self.substring(self.lastIndexOf(':') + 1));
         }
     }
 
     private final Config config;
     private final Metrics metrics;
     private final PeerLinks peers;
-    private final Server grpc;
+    private final Server clientServer;
+    private final Server peerServer;
     private final ExecutorService rpcThreads = Executors.newVirtualThreadPerTaskExecutor();
     private final Thread flusher;
     private final Thread ticker;
@@ -103,18 +124,28 @@ public final class LedgerServer implements AutoCloseable {
         this.peers = new PeerLinks(config.id(), config.cluster());
         boot();
 
-        this.grpc = NettyServerBuilder.forPort(config.port())
+        // clients and peers get separate ports, so a firewall rule can keep node-to-node traffic
+        // (and the admin controls) away from everything but the other nodes
+        NettyServerBuilder peer = NettyServerBuilder.forAddress(new InetSocketAddress(config.bind(), config.peerPort()))
                 .executor(rpcThreads)
                 .maxInboundMessageSize(PeerLinks.MAX_MESSAGE_BYTES)
-                .addService(new RaftService())
+                .addService(new RaftService());
+        if (config.admin()) {
+            peer.addService(new AdminService());
+        }
+        this.peerServer = peer.build();
+        this.clientServer = NettyServerBuilder.forAddress(new InetSocketAddress(config.bind(), config.clientPort()))
+                .executor(rpcThreads)
                 .addService(new LedgerService())
-                .addService(new AdminService())
                 .build();
         try {
-            grpc.start();
+            peerServer.start();
+            clientServer.start();
         } catch (IOException e) {
+            peerServer.shutdownNow();
             peers.close();
-            throw new UncheckedIOException("can't listen on port " + config.port(), e);
+            throw new UncheckedIOException("can't listen on " + config.bind() + " ports " + config.peerPort()
+                    + " and " + config.clientPort(), e);
         }
 
         flusher = Thread.ofPlatform().name("ledger-" + config.id() + "-flush").start(this::flushLoop);
@@ -130,8 +161,12 @@ public final class LedgerServer implements AutoCloseable {
         up = true;
     }
 
-    public int port() {
-        return grpc.getPort();
+    public int clientPort() {
+        return clientServer.getPort();
+    }
+
+    public int peerPort() {
+        return peerServer.getPort();
     }
 
     public Metrics metrics() {
@@ -497,9 +532,11 @@ public final class LedgerServer implements AutoCloseable {
         closed = true;
         ticker.interrupt();
         flusher.interrupt();
-        grpc.shutdownNow();
+        clientServer.shutdownNow();
+        peerServer.shutdownNow();
         try {
-            grpc.awaitTermination(2, TimeUnit.SECONDS);
+            clientServer.awaitTermination(2, TimeUnit.SECONDS);
+            peerServer.awaitTermination(2, TimeUnit.SECONDS);
             ticker.join();
             flusher.join();
         } catch (InterruptedException e) {

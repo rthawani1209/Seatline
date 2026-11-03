@@ -57,7 +57,7 @@ Each ledger server is one Java process ([`server/LedgerServer.java`](../ledger/s
 
 - **Raft**, server to server. Each server keeps one long-lived stream open to each of the others and pushes Raft messages down it. If a peer is down or can't keep up, messages are dropped instead of piling up in memory; Raft already resends on the next heartbeat.
 - **Ledger**, for the API: `Write` (a seat command), `SeatMap` and `GetTicket` (linearizable reads through ReadIndex).
-- **Admin**, for the chaos panel and the benchmarks: status, crash, revive, cut off from other servers, heal.
+- **Admin**, for the chaos panel and the benchmarks: status, crash, revive, cut off from other servers, heal. Off unless the server is started with `--admin` (see ports below).
 
 **Threads.** Every incoming call runs on its own **Java 21 virtual thread**, so thousands of fans waiting on a write cost almost nothing. All of them share **one lock** around the Raft node. That's slower than clever fine-grained locking in theory, but the Raft code stays single-threaded and easy to reason about. The lock is held briefly; the longest hold is the fsync, which batches everyone's writes (next paragraph).
 
@@ -67,7 +67,11 @@ Each ledger server is one Java process ([`server/LedgerServer.java`](../ledger/s
 
 **Metrics.** Each server serves Prometheus metrics on `/metrics`: term, commit index, whether it's leader, leader changes, elections started, writes by outcome and a write-latency histogram ([`server/Metrics.java`](../ledger/src/main/java/dev/seatline/ledger/server/Metrics.java)).
 
-Run a node: `java -cp ... dev.seatline.ledger.server.LedgerMain --id 1 --cluster 1=localhost:7001,2=localhost:7002,3=localhost:7003 --data data/node1 --metrics 9101`.
+**Ports and who can reach them.** Each server has two ports. The **client port** serves only the Ledger service, for the API. The **peer port** serves Raft and, only if the server was started with `--admin`, the Admin service. Both listen on localhost unless `--bind` says otherwise. This matters because nothing on these ports is authenticated yet: anyone who could reach a peer port could pretend to be a leader and overwrite the seat log, and anyone who could reach Admin could crash servers. So until the security work lands, the rule is: peer ports are only reachable by the other ledger servers (separate port, private network, firewall), Admin is off unless needed (benchmarks and local demos), and the chaos panel will reach it through the authenticated API rather than directly.
+
+**Planned (day 11): mutual TLS.** Every server and the API get certificates from a private certificate authority. Peer connections require a certificate that names one of the other ledger servers, and client connections require the API's certificate, so a stranger on the network can't speak Raft or call the ledger at all.
+
+Run a node: `java -cp ... dev.seatline.ledger.server.LedgerMain --id 1 --cluster 1=localhost:7001,2=localhost:7002,3=localhost:7003 --port 8001 --data data/node1 --metrics 9101`.
 
 ### How it's tested
 

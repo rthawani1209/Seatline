@@ -36,11 +36,11 @@ seatline/
 mvn -q -pl ledger compile dependency:build-classpath -Dmdep.outputFile=target/bench.cp
 CP="ledger/target/classes:$(cat ledger/target/bench.cp)"
 CLUSTER=1=localhost:7001,2=localhost:7002,3=localhost:7003
-for i in 1 2 3; do java -cp "$CP" dev.seatline.ledger.server.LedgerMain --id $i --cluster $CLUSTER --data data/node$i --metrics 910$i & done
+for i in 1 2 3; do java -cp "$CP" dev.seatline.ledger.server.LedgerMain --id $i --cluster $CLUSTER --port 800$i --data data/node$i --metrics 910$i & done
 curl localhost:9101/metrics
 ```
 
-`scripts/bench.sh` starts clusters like this itself and writes the throughput and failover results.
+`--cluster` lists the ports the servers use to talk to each other; `--port` is where the API connects. Everything listens on localhost unless you pass `--bind`, and the crash/partition controls only exist with `--admin`. `scripts/bench.sh` starts clusters like this itself and writes the throughput and failover results.
 
 ## Running the tests
 
