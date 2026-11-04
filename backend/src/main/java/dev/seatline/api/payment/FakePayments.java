@@ -15,6 +15,7 @@ public class FakePayments implements Payments {
 
     private final Map<String, Charge> charges = new ConcurrentHashMap<>();
     private final Map<String, Long> refunded = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> refundKeys = new ConcurrentHashMap<>();
 
     @Override
     public Charge charge(String key, long cents, String token, String description) {
@@ -24,8 +25,10 @@ public class FakePayments implements Payments {
     }
 
     @Override
-    public void refund(String ref, long cents) {
-        refunded.merge(ref, cents, Long::sum);
+    public void refund(String key, String ref, long cents) {
+        if (refundKeys.putIfAbsent(key, true) == null) {
+            refunded.merge(ref, cents, Long::sum);
+        }
     }
 
     /** Total refunded on a charge, for tests. */

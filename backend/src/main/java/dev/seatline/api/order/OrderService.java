@@ -16,6 +16,7 @@ import dev.seatline.ledger.seats.SeatResult;
 import dev.seatline.ledger.seats.SeatResult.Outcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -84,8 +85,24 @@ public class OrderService {
         List<String> wanted = quote.lines().stream().map(EventService.QuoteLine::seat).toList();
         String holdId = "h" + UUID.randomUUID().toString().replace("-", "");
 
-        SeatResult r = seats.write(new SeatCommand.Hold(eventId.toString(), wanted, fan.id().toString(), holdId,
-                HOLD_TTL.toMillis()));
+        // take one use of the promo code now, so the last use can't go to several fans at once
+        if (quote.promoCode() != null && db.sql("""
+                update promo_codes set used = used + 1
+                where event_id = ? and code = ? and used < max_uses and (expires_at is null or expires_at > now())""")
+                .params(eventId, quote.promoCode()).update() == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_promo_code");
+        }
+        SeatResult r;
+        try {
+            r = seats.write(new SeatCommand.Hold(eventId.toString(), wanted, fan.id().toString(), holdId,
+                    HOLD_TTL.toMillis()));
+        } catch (RuntimeException e) {
+            returnPromoUse(eventId, quote.promoCode());
+            throw e;
+        }
+        if (!r.ok()) {
+            returnPromoUse(eventId, quote.promoCode());
+        }
         switch (r.outcome()) {
             case OK -> { }
             case SEATS_TAKEN -> throw new ApiException(HttpStatus.CONFLICT, "seats_taken");
@@ -105,7 +122,11 @@ public class OrderService {
 
     public void release(String holdId, CurrentUser fan) {
         HoldRow h = holdOf(holdId, fan);
+        if (orderForHold(holdId).isPresent()) {
+            throw new ApiException(HttpStatus.CONFLICT, "already_paid");
+        }
         seats.write(new SeatCommand.Release(h.id()));
+        handBackPromo(h);
     }
 
     public Order checkout(String holdId, CurrentUser fan, String cardToken) {
@@ -115,18 +136,57 @@ public class OrderService {
             return done.get(); // a retry after the first answer got lost
         }
 
-        Payments.Charge charge = payments.charge(holdId + ":" + cardToken, h.totalCents(), cardToken, "Seatline tickets");
+        // written down before any money moves; the reconciler finishes or refunds it if we die
+        String key = holdId + ":" + cardToken;
+        db.sql("""
+                insert into payment_attempts (idem_key, hold_id, card_token, amount_cents, state)
+                values (?, ?, ?, ?, 'CHARGING') on conflict do nothing""")
+                .params(key, holdId, cardToken, h.totalCents()).update();
+        Payments.Charge charge = payments.charge(key, h.totalCents(), cardToken, "Seatline tickets");
         if (!charge.approved()) {
+            attemptState(key, "DECLINED", null);
             throw new ApiException(HttpStatus.PAYMENT_REQUIRED, "payment_declined");
         }
+        attemptState(key, "CHARGED", charge.ref());
+        step("charged");
 
-        SeatResult r = seats.write(new SeatCommand.Confirm(holdId, charge.ref()));
-        boolean confirmed = r.ok() || (r.outcome() == Outcome.NO_SUCH_HOLD && alreadyConfirmed(h, charge.ref()));
-        if (!confirmed) {
-            payments.refund(charge.ref(), h.totalCents());
+        Order order = finish(h, key, charge.ref());
+        if (order == null) {
             throw new ApiException(HttpStatus.CONFLICT, "hold_expired");
         }
-        return tx.execute(status -> saveOrder(h, charge.ref()));
+        return order;
+    }
+
+    /**
+     * Turns a paid hold into an order, or refunds it if the ledger won't issue the tickets. Used by
+     * checkout and by the reconciler; safe to run more than once for the same payment.
+     */
+    private Order finish(HoldRow h, String key, String paymentRef) {
+        SeatResult r = seats.write(new SeatCommand.Confirm(h.id(), paymentRef));
+        boolean confirmed = r.ok() || (r.outcome() == Outcome.NO_SUCH_HOLD && alreadyConfirmed(h, paymentRef));
+        if (!confirmed) {
+            queueRefund("attempt:" + key, paymentRef, h.totalCents(), "hold ended before payment");
+            attemptState(key, "REFUNDED", paymentRef);
+            handBackPromo(h);
+            sendRefunds();
+            return null;
+        }
+        step("confirmed");
+        try {
+            return tx.execute(status -> {
+                Order order = saveOrder(h, paymentRef);
+                attemptState(key, "DONE", paymentRef);
+                return order;
+            });
+        } catch (DuplicateKeyException e) {
+            // another checkout of the same hold (same card, so same charge) saved it first
+            attemptState(key, "DONE", paymentRef);
+            return orderForHold(h.id()).orElseThrow();
+        }
+    }
+
+    /** Test seam: a place where the process could die. Does nothing in normal running. */
+    void step(String name) {
     }
 
     public List<TicketView> tickets(CurrentUser fan) {
@@ -162,8 +222,11 @@ public class OrderService {
         if (!r.ok()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket");
         }
-        db.sql("update tickets set status = 'RETURNED' where id = ?").param(ticketId).update();
-        payments.refund(t.paymentRef(), t.priceCents());
+        tx.executeWithoutResult(status -> {
+            db.sql("update tickets set status = 'RETURNED' where id = ?").param(ticketId).update();
+            queueRefund("return:" + ticketId, t.paymentRef(), t.priceCents(), "ticket returned");
+        });
+        sendRefunds();
     }
 
     /** Frees holds whose time is up. Every API server sends it; doing it twice is harmless. */
@@ -174,6 +237,61 @@ public class OrderService {
         } catch (RuntimeException e) {
             log.debug("couldn't expire holds this round: {}", e.toString());
         }
+    }
+
+    /**
+     * Cleans up after anything that died halfway: payments taken without an order (finish or
+     * refund them), refunds that failed to send, and promo uses held by holds that ran out.
+     */
+    @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
+    void reconcile() {
+        try {
+            reconcileNow(Duration.ofMinutes(1));
+        } catch (RuntimeException e) {
+            log.warn("reconcile round failed, will retry: {}", e.toString());
+        }
+    }
+
+    void reconcileNow(Duration olderThan) {
+        Timestamp cutoff = Timestamp.from(Instant.now().minus(olderThan));
+        record Attempt(String key, String holdId, String token, String state, String ref) {}
+        List<Attempt> stuck = db.sql("""
+                select idem_key, hold_id, card_token, state, payment_ref from payment_attempts
+                where state in ('CHARGING', 'CHARGED') and created_at < ?""").param(cutoff)
+                .query((rs, n) -> new Attempt(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)))
+                .list();
+        for (Attempt a : stuck) {
+            HoldRow h = holdRow(a.holdId());
+            String ref = a.ref();
+            if (a.state().equals("CHARGING")) {
+                // we don't know if the charge went through; asking again with the same key tells us
+                Payments.Charge c = payments.charge(a.key(), h.totalCents(), a.token(), "Seatline tickets");
+                if (!c.approved()) {
+                    attemptState(a.key(), "DECLINED", null);
+                    continue;
+                }
+                ref = c.ref();
+                attemptState(a.key(), "CHARGED", ref);
+            }
+            if (orderForHold(h.id()).isPresent()) {
+                // the order was saved by another attempt with a different card: this charge is extra
+                queueRefund("attempt:" + a.key(), ref, h.totalCents(), "paid twice for one hold");
+                attemptState(a.key(), "REFUNDED", ref);
+                continue;
+            }
+            finish(h, a.key(), ref);
+        }
+
+        // holds that ended unpaid give their promo use back
+        db.sql("""
+                select id, event_id, promo_code from holds h
+                where promo_code is not null and not promo_returned and expires_at < ?
+                  and not exists (select 1 from orders o where o.hold_id = h.id)""").param(cutoff)
+                .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), null, 0, rs.getString(3)))
+                .list()
+                .forEach(this::handBackPromo);
+
+        sendRefunds();
     }
 
     // ---------------------------------------------------------------- internals
@@ -201,6 +319,53 @@ public class OrderService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket"));
     }
 
+    private HoldRow holdRow(String holdId) {
+        return db.sql("select id, event_id, quote, total_cents, promo_code from holds where id = ?").param(holdId)
+                .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), read(rs.getString(3)),
+                        rs.getLong(4), rs.getString(5)))
+                .single();
+    }
+
+    private void attemptState(String key, String state, String ref) {
+        db.sql("update payment_attempts set state = ?, payment_ref = coalesce(?, payment_ref) where idem_key = ?")
+                .params(state, ref, key).update();
+    }
+
+    private void queueRefund(String id, String paymentRef, long cents, String reason) {
+        db.sql("insert into refunds (id, payment_ref, amount_cents, reason) values (?, ?, ?, ?) on conflict do nothing")
+                .params(id, paymentRef, cents, reason).update();
+    }
+
+    /** Sends every pending refund. One that fails stays pending for the next round. */
+    void sendRefunds() {
+        record Refund(String id, String ref, long cents) {}
+        List<Refund> pending = db.sql("select id, payment_ref, amount_cents from refunds where state = 'PENDING'")
+                .query((rs, n) -> new Refund(rs.getString(1), rs.getString(2), rs.getLong(3))).list();
+        for (Refund r : pending) {
+            try {
+                payments.refund(r.id(), r.ref(), r.cents());
+                db.sql("update refunds set state = 'DONE' where id = ?").param(r.id()).update();
+            } catch (RuntimeException e) {
+                log.warn("refund {} failed, will retry: {}", r.id(), e.toString());
+            }
+        }
+    }
+
+    /** Gives a hold's promo code use back, once. */
+    private void handBackPromo(HoldRow h) {
+        if (h.promoCode() != null
+                && db.sql("update holds set promo_returned = true where id = ? and not promo_returned").param(h.id()).update() == 1) {
+            returnPromoUse(h.eventId(), h.promoCode());
+        }
+    }
+
+    private void returnPromoUse(UUID eventId, String code) {
+        if (code != null) {
+            db.sql("update promo_codes set used = used - 1 where event_id = ? and code = ? and used > 0")
+                    .params(eventId, code).update();
+        }
+    }
+
     /** True if an earlier checkout of this hold got as far as the ledger with this payment. */
     private boolean alreadyConfirmed(HoldRow h, String paymentRef) {
         String seat = h.quote().lines().getFirst().seat();
@@ -219,10 +384,6 @@ public class OrderService {
                     .params(ticketId(h.id(), line.seat()), orderId, h.eventId(), line.seat(), line.tier(),
                             line.price().total(), fan)
                     .update();
-        }
-        if (h.promoCode() != null) {
-            db.sql("update promo_codes set used = used + 1 where event_id = ? and code = ?")
-                    .params(h.eventId(), h.promoCode()).update();
         }
         Order order = orderForHold(h.id()).orElseThrow();
         StringBuilder body = new StringBuilder("Your tickets for " + order.tickets().getFirst().eventName() + ":\n");

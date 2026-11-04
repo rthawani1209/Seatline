@@ -19,9 +19,11 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -33,6 +35,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -48,6 +53,7 @@ class OrderFlowTest {
     @Autowired Seats ledger;
     @Autowired FakePayments payments;
     @Autowired JdbcTemplate jdbc;
+    @MockitoSpyBean OrderService orders;
 
     String organizer;
     String eventId;
@@ -134,6 +140,85 @@ class OrderFlowTest {
         checkout(fan, holdId, "tok_visa").andExpect(status().isOk());
         hold(testUsers.bearer(Role.FAN), "ONCE", "FLOOR-A-4").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("invalid_promo_code"));
+    }
+
+    @Test
+    void theLastPromoUseCantGoToTwoFansAndComesBackIfUnpaid() throws Exception {
+        call(HttpMethod.POST, "/events/" + eventId + "/promo-codes", organizer, """
+                {"code": "LAST", "percentOff": 10, "maxUses": 1}""").andExpect(status().isCreated());
+        String first = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(first, "LAST", "FLOOR-A-1").andExpect(status().isCreated())).get("holdId").asText();
+        // nobody has paid yet, but the use is taken
+        hold(testUsers.bearer(Role.FAN), "LAST", "FLOOR-A-2").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_promo_code"));
+
+        call(HttpMethod.DELETE, "/holds/" + holdId, first, null).andExpect(status().isNoContent());
+        hold(testUsers.bearer(Role.FAN), "LAST", "FLOOR-A-2").andExpect(status().isCreated());
+    }
+
+    @Test
+    void twoCheckoutsOfOneHoldAtOnceGiveOneOrder() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-3")).get("holdId").asText();
+        Callable<JsonNode> pay = () -> body(checkout(fan, holdId, "tok_visa").andExpect(status().isOk()));
+        List<JsonNode> results = new ArrayList<>();
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (Future<JsonNode> f : pool.invokeAll(List.of(pay, pay))) {
+                results.add(f.get());
+            }
+        }
+        assertThat(results.get(1).get("id")).isEqualTo(results.get(0).get("id"));
+        assertThat(jdbc.queryForObject("select count(*) from tickets where order_id = ?::uuid", Integer.class,
+                results.get(0).get("id").asText())).isEqualTo(1);
+    }
+
+    /** Runs checkout with the process "dying" at one step, then lets the reconciler clean up. */
+    String crashThenReconcile(String step, boolean holdLostMeanwhile) throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-4")).get("holdId").asText();
+        doThrow(new IllegalStateException("simulated crash")).when(orders).step(step);
+        try {
+            assertThatThrownBy(() -> checkout(fan, holdId, "tok_visa")).hasRootCauseMessage("simulated crash");
+        } finally {
+            doNothing().when(orders).step(step);
+        }
+        if (holdLostMeanwhile) {
+            ledger.write(new SeatCommand.Release(holdId));
+        }
+        jdbc.update("update payment_attempts set created_at = now() - interval '5 minutes' where hold_id = ?", holdId);
+        orders.reconcileNow(Duration.ofMinutes(1));
+        return holdId;
+    }
+
+    int orders(String holdId) {
+        return jdbc.queryForObject("select count(*) from orders where hold_id = ?", Integer.class, holdId);
+    }
+
+    long refunded(String holdId) {
+        String ref = jdbc.queryForObject("select payment_ref from payment_attempts where hold_id = ?", String.class, holdId);
+        return payments.refundedOn(ref);
+    }
+
+    @Test
+    void diedAfterChargingAndTheHoldIsStillThereSoTheOrderIsFinished() throws Exception {
+        String holdId = crashThenReconcile("charged", false);
+        assertThat(orders(holdId)).isEqualTo(1);
+        assertThat(refunded(holdId)).isZero();
+        assertThat(seatStatus("FLOOR-A-4")).isEqualTo("SOLD");
+    }
+
+    @Test
+    void diedAfterChargingAndTheHoldIsGoneSoTheMoneyGoesBack() throws Exception {
+        String holdId = crashThenReconcile("charged", true);
+        assertThat(orders(holdId)).isZero();
+        assertThat(refunded(holdId)).isEqualTo(jdbc.queryForObject("select total_cents from holds where id = ?", Long.class, holdId));
+    }
+
+    @Test
+    void diedAfterTheLedgerConfirmedSoTheOrderIsWritten() throws Exception {
+        String holdId = crashThenReconcile("confirmed", false);
+        assertThat(orders(holdId)).isEqualTo(1);
+        assertThat(refunded(holdId)).isZero();
     }
 
     @Test

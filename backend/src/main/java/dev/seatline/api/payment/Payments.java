@@ -11,5 +11,6 @@ public interface Payments {
      */
     Charge charge(String key, long cents, String token, String description);
 
-    void refund(String ref, long cents);
+    /** Refunds part or all of a charge. Idempotent on {@code key}: retrying never refunds twice. */
+    void refund(String key, String ref, long cents);
 }

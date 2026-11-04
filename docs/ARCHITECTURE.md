@@ -121,11 +121,13 @@ Prices and events live in Postgres. Which seats are free, held or sold is only e
 Code: [`order/OrderService.java`](../backend/src/main/java/dev/seatline/api/order/OrderService.java).
 
 1. **Hold.** The fan picks seats. The API prices them (same rules as a quote), then asks the ledger to hold all of them for 10 minutes, or none. If even one is taken the fan gets `409 seats_taken` and nothing is held. The quoted price is saved with the hold so checkout charges exactly that.
-2. **Pay.** Checkout charges the card first. Charges are idempotent (the key is the hold plus the card), so pressing "pay" twice charges once.
+2. **Pay.** Checkout first writes a *payment attempt* row, then charges the card. Charges are idempotent (the key is the hold plus the card), so pressing "pay" twice charges once.
 3. **Confirm.** The API asks the ledger to turn the hold into tickets. If the hold ran out while the fan was paying, the ledger refuses (it uses the time stamped in the log, so every copy agrees) and the API refunds the charge.
 4. **Record.** Only after the ledger said yes are the order and tickets written to Postgres, in one transaction, along with a confirmation email in the outbox and the promo code's use count.
 
-If the API crashes between 3 and 4, the fan's retry of checkout finds the tickets already in the ledger (a ticket's id is made from the hold id and seat, and it records which payment bought it) and finishes step 4 without charging again. Every API server also tells the ledger to clear out expired holds every 5 seconds, which is harmless when several do it.
+**If the API dies halfway**, nobody has to retry for things to come right. Every 30 seconds a reconciler looks for payment attempts that are over a minute old and never finished. For each one it asks the ledger to confirm the hold with that payment: if the tickets are issued (or were already, since a ticket's id is made from the hold and seat and records which payment bought it) it writes the order; if the hold is gone it refunds. So money taken always ends as either tickets or a refund. Refunds go through a queue table too, with an id that says what they're for, so a refund that fails to send is retried and one that two workers both decide on is only sent once. Two checkouts of the same hold at the same moment end with one order.
+
+**Promo codes** are reserved when seats are held (`used < max_uses` checked and incremented in one statement), and given back if the hold is released or runs out unpaid, so the last use of a code can't go to several fans. Every API server also tells the ledger to clear out expired holds every 5 seconds, which is harmless when several do it.
 
 **Payments** sit behind a small interface ([`payment/Payments.java`](../backend/src/main/java/dev/seatline/api/payment/Payments.java)). For now it's a stand-in that approves `tok_visa` and declines `tok_declined`, the way Stripe's test cards do; the Stripe version plugs into the same interface.
 
