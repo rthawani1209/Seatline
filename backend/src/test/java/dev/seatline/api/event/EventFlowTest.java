@@ -202,6 +202,32 @@ class EventFlowTest {
         mvc.perform(get("/me").header("Authorization", organizer)).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void bestAvailablePicksSeatsTogetherNearTheFront() throws Exception {
+        String eventId = createEvent();
+        post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isNoContent());
+        String floor = tierId(body(mvc.perform(get("/events/" + eventId))), "Floor");
+        String best = "/events/" + eventId + "/best-seats?tierId=" + floor;
+
+        // row A has 4 seats: the middle pair wins
+        assertThat(texts(body(mvc.perform(get(best + "&count=2"))).get("seats"))).containsExactly("FLOOR-A-2", "FLOOR-A-3");
+
+        // take A-2: no pair is left together in row A except A-3/A-4, which is still in front of row B
+        ledger.write(new SeatCommand.Hold(eventId, List.of("FLOOR-A-2"), "fan-1", "h-" + UUID.randomUUID(), 60_000));
+        assertThat(texts(body(mvc.perform(get(best + "&count=2"))).get("seats"))).containsExactly("FLOOR-A-3", "FLOOR-A-4");
+        // three together only fits in row B now
+        assertThat(texts(body(mvc.perform(get(best + "&count=3"))).get("seats"))).containsExactly("FLOOR-B-1", "FLOOR-B-2", "FLOOR-B-3");
+        // only A-1 is accessible
+        assertThat(texts(body(mvc.perform(get(best + "&count=1&accessible=true"))).get("seats"))).containsExactly("FLOOR-A-1");
+        mvc.perform(get(best + "&count=5")).andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("no_seats_together"));
+    }
+
+    static List<String> texts(JsonNode array) {
+        List<String> out = new java.util.ArrayList<>();
+        array.forEach(n -> out.add(n.asText()));
+        return out;
+    }
+
     static String tierId(JsonNode event, String name) {
         for (JsonNode t : event.get("tiers")) {
             if (t.get("name").asText().equals(name)) {

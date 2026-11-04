@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -47,10 +48,12 @@ class EventController {
 
     private final EventService events;
     private final AccountService accounts;
+    private final BestSeats bestSeats;
 
-    EventController(EventService events, AccountService accounts) {
+    EventController(EventService events, AccountService accounts, BestSeats bestSeats) {
         this.events = events;
         this.accounts = accounts;
+        this.bestSeats = bestSeats;
     }
 
     @PostMapping("/events")
@@ -72,6 +75,14 @@ class EventController {
     @GetMapping("/events/{id}")
     EventService.Event get(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
         return events.getVisible(id, jwt == null ? null : CurrentUser.of(jwt));
+    }
+
+    /** Suggests the best free seats together, for the "best available" button. */
+    @GetMapping("/events/{id}/best-seats")
+    Map<String, List<String>> bestSeats(@PathVariable UUID id, @RequestParam UUID tierId,
+                                        @RequestParam(defaultValue = "2") int count,
+                                        @RequestParam(defaultValue = "false") boolean accessible) {
+        return Map.of("seats", bestSeats.pick(id, tierId, count, accessible));
     }
 
     /** Free, held or sold for each seat. Only statuses: who holds or owns a seat stays private. */

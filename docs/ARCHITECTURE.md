@@ -112,6 +112,7 @@ Prices and events live in Postgres. Which seats are free, held or sold is only e
 
 - **Publishing** an event first creates it in the ledger with every seat a tier covers, then marks it on sale in Postgres. If the API dies between the two, publishing again finds the event already in the ledger and carries on.
 - **The live seat map** (`GET /events/{id}/seats`) reads straight from the ledger through ReadIndex, so it's never stale. It returns only free, held or sold; who holds or owns a seat isn't shown.
+- **Best available** (`GET /events/{id}/best-seats`) suggests seats together in one row: the front-most row that has room wins, then the seats closest to the middle. It can be limited to accessible seats. It only suggests; holding them still goes through the ledger, so two fans offered the same seats can't both get them. Code: [`BestSeats`](../backend/src/main/java/dev/seatline/api/event/BestSeats.java).
 - **Talking to the ledger** goes through [`Seats`](../backend/src/main/java/dev/seatline/api/seats/Seats.java): a fixed pool of 64 ledger sessions. The ledger remembers the last answer for every client id it has seen, so reusing sessions keeps that memory bounded. If no leader answers within 5 seconds the API replies `503 try_again`.
 - **Tests** start a real one-node ledger inside the test JVM ([`TestLedger`](../backend/src/test/java/dev/seatline/api/TestLedger.java)).
 

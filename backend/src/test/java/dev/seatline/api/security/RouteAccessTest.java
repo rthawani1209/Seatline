@@ -60,6 +60,7 @@ class RouteAccessTest {
         POLICY.put("GET /events", null);
         POLICY.put("GET /events/{id}", null);
         POLICY.put("GET /events/{id}/seats", null);
+        POLICY.put("GET /events/{id}/best-seats", null);
         POLICY.put("POST /events/{id}/publish", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/promo-codes", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/quote", SIGNED_IN);
