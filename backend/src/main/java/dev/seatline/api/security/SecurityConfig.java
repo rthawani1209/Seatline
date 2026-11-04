@@ -59,7 +59,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/venues", "/events").hasAnyRole("ORGANIZER", "ADMIN")
                         // ownership of the event is checked in EventService
                         .requestMatchers(HttpMethod.POST, "/events/*/publish", "/events/*/promo-codes").hasAnyRole("ORGANIZER", "ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/events/*/quote").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/events/*/quote", "/events/*/holds", "/holds/*/checkout",
+                                "/tickets/*/transfer", "/tickets/*/return").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/holds/*").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/me/tickets").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken())))
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));

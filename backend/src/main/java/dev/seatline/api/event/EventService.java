@@ -123,19 +123,23 @@ public class EventService {
 
         Instant now = clock.instant();
         List<Tier> tiers = new ArrayList<>();
-        db.sql("select id, name, kind, price_cents, ends_at from tiers where event_id = ? order by price_cents").param(id)
+        // one query: a query inside another's row callback needs a second connection while holding
+        // the first, which deadlocks the pool under load (found by the 20-fan race test)
+        db.sql("""
+                select t.id, t.name, t.kind, t.price_cents, t.ends_at,
+                       array(select s.name from tier_sections ts join sections s on s.id = ts.section_id
+                             where ts.tier_id = t.id order by s.position) as sections
+                from tiers t where t.event_id = ? order by t.price_cents""").param(id)
                 .query(rs -> {
                     Timestamp ends = rs.getTimestamp("ends_at");
                     if (ends != null && !ends.toInstant().isAfter(now)) {
                         return; // early bird is over
                     }
-                    UUID tierId = rs.getObject("id", UUID.class);
-                    List<String> sections = db.sql("""
-                            select s.name from tier_sections ts join sections s on s.id = ts.section_id
-                            where ts.tier_id = ? order by s.position""").param(tierId).query(String.class).list();
+                    List<String> sections = List.of((String[]) rs.getArray("sections").getArray());
                     int price = rs.getInt("price_cents");
-                    tiers.add(new Tier(tierId, rs.getString("name"), TierKind.valueOf(rs.getString("kind")), price,
-                            row.pricing().price(price, 0).total(), ends == null ? null : ends.toInstant(), sections));
+                    tiers.add(new Tier(rs.getObject("id", UUID.class), rs.getString("name"),
+                            TierKind.valueOf(rs.getString("kind")), price, row.pricing().price(price, 0).total(),
+                            ends == null ? null : ends.toInstant(), sections));
                 });
         return new Event(id, row.venueId(), row.organizerId(), row.name(), row.startsAt(), row.status(), row.limit(),
                 row.pricing(), tiers);

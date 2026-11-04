@@ -115,6 +115,21 @@ Prices and events live in Postgres. Which seats are free, held or sold is only e
 - **Talking to the ledger** goes through [`Seats`](../backend/src/main/java/dev/seatline/api/seats/Seats.java): a fixed pool of 64 ledger sessions. The ledger remembers the last answer for every client id it has seen, so reusing sessions keeps that memory bounded. If no leader answers within 5 seconds the API replies `503 try_again`.
 - **Tests** start a real one-node ledger inside the test JVM ([`TestLedger`](../backend/src/test/java/dev/seatline/api/TestLedger.java)).
 
+### Buying tickets
+
+Code: [`order/OrderService.java`](../backend/src/main/java/dev/seatline/api/order/OrderService.java).
+
+1. **Hold.** The fan picks seats. The API prices them (same rules as a quote), then asks the ledger to hold all of them for 10 minutes, or none. If even one is taken the fan gets `409 seats_taken` and nothing is held. The quoted price is saved with the hold so checkout charges exactly that.
+2. **Pay.** Checkout charges the card first. Charges are idempotent (the key is the hold plus the card), so pressing "pay" twice charges once.
+3. **Confirm.** The API asks the ledger to turn the hold into tickets. If the hold ran out while the fan was paying, the ledger refuses (it uses the time stamped in the log, so every copy agrees) and the API refunds the charge.
+4. **Record.** Only after the ledger said yes are the order and tickets written to Postgres, in one transaction, along with a confirmation email in the outbox and the promo code's use count.
+
+If the API crashes between 3 and 4, the fan's retry of checkout finds the tickets already in the ledger (a ticket's id is made from the hold id and seat, and it records which payment bought it) and finishes step 4 without charging again. Every API server also tells the ledger to clear out expired holds every 5 seconds, which is harmless when several do it.
+
+**Payments** sit behind a small interface ([`payment/Payments.java`](../backend/src/main/java/dev/seatline/api/payment/Payments.java)). For now it's a stand-in that approves `tok_visa` and declines `tok_declined`, the way Stripe's test cards do; the Stripe version plugs into the same interface.
+
+**After buying**, a fan can give a ticket to another account (the ticket's version goes up, so a screenshot of the old QR code stops working) or hand it back for a refund of what they paid, which puts the seat back on sale.
+
 ### Data
 
 Postgres, with the schema in versioned Flyway migrations ([`db/migration`](../backend/src/main/resources/db/migration/)). All queries go through Spring Data JPA or `JdbcTemplate` with `?` placeholders, never string concatenation, so text from users can't change a query. Tests run against a real Postgres started in Docker by Testcontainers.

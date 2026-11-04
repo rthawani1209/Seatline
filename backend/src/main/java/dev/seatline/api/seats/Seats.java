@@ -69,6 +69,11 @@ public class Seats {
         return out;
     }
 
+    /** The ledger's record of a ticket, if it has one. */
+    public java.util.Optional<dev.seatline.ledger.seats.SeatLedger.Ticket> ticket(String ticketId) {
+        return ledger.ticket(ticketId);
+    }
+
     @PreDestroy
     void close() {
         ledger.close();

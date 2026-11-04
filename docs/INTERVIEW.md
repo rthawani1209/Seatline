@@ -61,6 +61,7 @@ I killed the leader process with SIGKILL 20 times on a 5-server cluster while a 
 Two good ones from putting the ledger on a real network:
 1. **The benchmark showed about 600 writes/sec with 64 clients, roughly what 4 clients should manage.** The client library used a `synchronized` method around a blocking gRPC call. On Java 21, a virtual thread that blocks inside `synchronized` pins its carrier thread, and there's one carrier per CPU core, so only 4 of the 64 clients could ever be waiting at once. Switching to a `ReentrantLock` let all 64 run (later JDKs fix this pinning).
 2. **A server restarted after a crash never caught up.** The leader had opened a gRPC stream to it while it was down, and that stream stayed "not ready" forever even after the server came back, so every message was silently dropped. The fix: if a stream hasn't been writable for 250 ms, cancel it and open a new one. `LedgerClusterTest.aStoppedNodeRestartsFromDiskAndCatchesUp` covers it.
+3. **The API froze for 30 seconds when 20 fans tried to hold the same seat at once.** Loading an event ran a second query (each tier's sections) from inside the first query's row loop, so every request needed two database connections at the same time. With a pool of 10, ten requests each grabbed one connection and all waited forever for a second. I made it a single query and checked the rest of the code for the same pattern. The race test `OrderFlowTest.twentyFansRaceForOneSeatAndExactlyOneGetsIt` is what caught it.
 
 ### How do you store passwords?
 Argon2id through Spring Security. It's deliberately slow and needs a lot of memory per guess, so even with the hashes an attacker can only try a few guesses per second per core, and GPUs don't help much. Each hash has its own random salt, so two people with the same password get different hashes. Login also runs a hash for unknown emails, so timing doesn't leak which emails have accounts.
@@ -79,4 +80,7 @@ Whole cents in `long`s, never floating point, so $0.10 + $0.20 is exactly 30 cen
 
 ### How do you revoke a JWT?
 Each user has a token version number in the database, and every token records the version it was issued at. Changing someone's role or turning off their two-factor bumps the number, and the API checks it on every request, so all their older tokens stop working immediately. It costs one primary-key lookup per request, which gives up a little of "stateless", but a demoted organizer being able to keep publishing events for an hour was worse. `EventFlowTest.aDemotedOrganizersOldTokenStopsWorking` shows it.
+
+### What if the payment goes through but the hold has already expired?
+The ledger decides, using the time stamped in its log, so every copy agrees whether the hold was still live. If it wasn't, the ledger refuses to issue tickets and the API refunds the charge. The order is always: charge, then confirm in the ledger, then write Postgres. Charging is idempotent and ticket ids are derived from the hold, so if the API crashes halfway, the fan's retry picks up where it stopped without charging twice or losing the tickets. There's a test for each of those cases.
 
