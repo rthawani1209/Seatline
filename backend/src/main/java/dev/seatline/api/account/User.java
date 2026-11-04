@@ -42,6 +42,9 @@ public class User {
     @Column(name = "totp_last_step", nullable = false)
     private long totpLastStep;
 
+    @Column(name = "token_version", nullable = false)
+    private int tokenVersion;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -77,7 +80,15 @@ public class User {
     }
 
     public void setRole(Role role) {
-        this.role = role;
+        if (role != this.role) {
+            this.role = role;
+            tokenVersion++; // tokens carry the role, so the old ones must go
+        }
+    }
+
+    /** Tokens issued at an older version are refused. */
+    public int tokenVersion() {
+        return tokenVersion;
     }
 
     public boolean emailVerified() {
@@ -115,6 +126,7 @@ public class User {
         this.totpSecret = null;
         this.totpPending = null;
         this.totpLastStep = 0;
+        tokenVersion++;
     }
 
     public long totpLastStep() {

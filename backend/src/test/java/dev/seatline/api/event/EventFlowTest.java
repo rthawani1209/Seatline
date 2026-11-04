@@ -188,6 +188,20 @@ class EventFlowTest {
         assertThat(after.toString()).doesNotContain("fan-1");
     }
 
+    @Test
+    void aDemotedOrganizersOldTokenStopsWorking() throws Exception {
+        String eventId = createEvent();
+        String me = body(mvc.perform(get("/me").header("Authorization", organizer))).get("id").asText();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/admin/users/" + me + "/role")
+                .header("Authorization", testUsers.bearer(Role.ADMIN))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"role\": \"FAN\"}"))
+                .andExpect(status().isNoContent());
+
+        // the token still says ORGANIZER and hasn't expired, but it was issued before the change
+        post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isUnauthorized());
+        mvc.perform(get("/me").header("Authorization", organizer)).andExpect(status().isUnauthorized());
+    }
+
     static String tierId(JsonNode event, String name) {
         for (JsonNode t : event.get("tiers")) {
             if (t.get("name").asText().equals(name)) {

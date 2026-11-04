@@ -72,8 +72,11 @@ Three layers: Argon2 makes each offline guess expensive, login is limited to 5 f
 The policy lives in one place, and a test turns it into a table: every route times every role (plus nobody), expecting "allowed" or "refused". The test also lists the routes Spring actually serves and fails if one isn't in the table, so a new endpoint can't ship without someone deciding who may call it. Anything not listed is denied by default. I checked the test bites by opening the admin route to any signed-in user; it failed with exactly the three roles that shouldn't get in.
 
 ### Why tokens instead of sessions?
-The API is stateless, so any API server can handle any request and scaling is just adding servers. Tokens in an `Authorization` header also aren't sent automatically by the browser, which removes cross-site request forgery. The trade-off: a token can't be revoked before it expires, so they're short (1 hour), and a role change applies at the next sign-in.
+The API is stateless, so any API server can handle any request and scaling is just adding servers. Tokens in an `Authorization` header also aren't sent automatically by the browser, which removes cross-site request forgery. The trade-off: a plain JWT can't be revoked before it expires. See the next question.
 
 ### How do you handle money?
 Whole cents in `long`s, never floating point, so $0.10 + $0.20 is exactly 30 cents. All the price math is in one small class with its own tests: promo discount first, then the fee on what's left, then tax, each rounded half up. The price on the seat map is already the all-in total, so there's no surprise at checkout, and the quote endpoint returns the exact number checkout will charge.
+
+### How do you revoke a JWT?
+Each user has a token version number in the database, and every token records the version it was issued at. Changing someone's role or turning off their two-factor bumps the number, and the API checks it on every request, so all their older tokens stop working immediately. It costs one primary-key lookup per request, which gives up a little of "stateless", but a demoted organizer being able to keep publishing events for an hour was worse. `EventFlowTest.aDemotedOrganizersOldTokenStopsWorking` shows it.
 

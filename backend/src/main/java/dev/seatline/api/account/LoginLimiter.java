@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Slows down password guessing: after too many failed logins for one email, or from one address,
@@ -22,7 +23,10 @@ public class LoginLimiter {
     static final Duration WINDOW = Duration.ofMinutes(15);
 
     private final Clock clock;
+    static final int SWEEP_EVERY = 1_000;
+
     private final Map<String, Deque<Long>> failures = new ConcurrentHashMap<>();
+    private final AtomicLong recorded = new AtomicLong();
 
     public LoginLimiter(Clock clock) {
         this.clock = clock;
@@ -35,29 +39,43 @@ public class LoginLimiter {
     public void failed(String email, String address) {
         record("e:" + email);
         record("a:" + address);
+        if (recorded.incrementAndGet() % SWEEP_EVERY == 0) {
+            sweep();
+        }
     }
 
     public void succeeded(String email) {
         failures.remove("e:" + email);
     }
 
+    /** Drops keys whose failures have all aged out, so the map doesn't grow forever. */
+    void sweep() {
+        failures.keySet().forEach(this::recent);
+    }
+
+    int keys() {
+        return failures.size();
+    }
+
+    // compute/computeIfPresent run under the map's own lock for that key, so pruning, counting and
+    // removing an empty entry can't race with another thread adding a failure to it
     private int recent(String key) {
-        Deque<Long> times = failures.get(key);
-        if (times == null) {
-            return 0;
-        }
-        synchronized (times) {
+        int[] count = {0};
+        failures.computeIfPresent(key, (k, times) -> {
             prune(times);
-            return times.size();
-        }
+            count[0] = times.size();
+            return times.isEmpty() ? null : times;
+        });
+        return count[0];
     }
 
     private void record(String key) {
-        Deque<Long> times = failures.computeIfAbsent(key, k -> new ArrayDeque<>());
-        synchronized (times) {
-            prune(times);
-            times.addLast(clock.millis());
-        }
+        failures.compute(key, (k, times) -> {
+            Deque<Long> t = times != null ? times : new ArrayDeque<>();
+            prune(t);
+            t.addLast(clock.millis());
+            return t;
+        });
     }
 
     private void prune(Deque<Long> times) {

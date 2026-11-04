@@ -14,6 +14,10 @@ spring:
       enabled: true
 
 server:
+  # Behind the load balancer every request arrives from its address. "native" makes Tomcat take
+  # the client address from X-Forwarded-For, but only when the request came from a private-network
+  # address (the balancer), so the internet can't fake it. Login rate limits depend on this.
+  forward-headers-strategy: native
   error:
     include-message: never
     include-stacktrace: never
