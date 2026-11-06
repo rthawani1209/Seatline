@@ -62,6 +62,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/events/*/quote", "/events/*/holds", "/holds/*/checkout",
                                 "/tickets/*/transfer", "/tickets/*/return").authenticated()
                         .requestMatchers(HttpMethod.DELETE, "/holds/*").authenticated()
+                        .requestMatchers("/events/*/queue").authenticated()
                         .requestMatchers(HttpMethod.GET, "/me/tickets").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken())))

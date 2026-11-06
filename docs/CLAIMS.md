@@ -81,6 +81,16 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Order confirmation emails are queued in an outbox table (no real sending) | `OrderFlowTest.holdPayAndGetTickets` | same | |
 | 🛠 Stripe test mode: payments go through an interface with a stand-in provider until Stripe test keys are added | [`Payments`](../backend/src/main/java/dev/seatline/api/payment/Payments.java), [`FakePayments`](../backend/src/main/java/dev/seatline/api/payment/FakePayments.java) | | |
 
+## Waiting room
+
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Redis-backed waiting room: fans let in in arrival order at the event's rate, with place in line and estimated wait | [`WaitingRoom`](../backend/src/main/java/dev/seatline/api/queue/WaitingRoom.java); `QueueFlowTest.fansAreLetInInOrderAtTheEventsRate` | `mvn -pl backend -am test -Dtest=QueueFlowTest -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Seats can only be held with a 10-minute pass from the waiting room (when the event has one) | same test | same | |
+| ✅ Unused turns aren't saved up: a crowd arriving after a quiet spell still goes in at the rate | `QueueFlowTest.turnsNobodyUsedArentSavedUp` | same | |
+| ✅ Fans who arrive before the sale opens are put in random order when it opens | `QueueFlowTest.arrivingBeforeTheSaleOpensDoesntMakeYouFirst` | same | 20 early fans shuffled |
+| ✅ 2-minute cooldown after letting a hold run out unpaid | `QueueFlowTest.lettingAHoldRunOutMeansAShortWaitButReleasingDoesNot` | same | |
+
 ## Still to build
 
-Waiting room, QR tickets and scanner, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).
+QR tickets and scanner, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).

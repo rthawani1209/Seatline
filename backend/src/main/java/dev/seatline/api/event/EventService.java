@@ -35,8 +35,13 @@ public class EventService {
     public record Tier(UUID id, String name, TierKind kind, int priceCents, long allInCents, Instant endsAt,
                        List<String> sections) {}
 
+    /**
+     * @param queuePerMinute fans let in from the waiting room per minute, or null for no waiting room
+     * @param onSaleAt when sales open (the waiting room starts letting fans in from then); set
+     *     by the organizer or, if not, when the event is published
+     */
     public record Event(UUID id, UUID venueId, UUID organizerId, String name, Instant startsAt, String status,
-                        int perFanLimit, Pricing pricing, List<Tier> tiers) {
+                        int perFanLimit, Pricing pricing, Integer queuePerMinute, Instant onSaleAt, List<Tier> tiers) {
 
         /** Cheapest all-in price currently on offer, for listings ("from $42"). */
         @JsonProperty
@@ -65,7 +70,7 @@ public class EventService {
 
     @Transactional
     public UUID create(CurrentUser by, UUID venueId, String name, Instant startsAt, int perFanLimit, Pricing pricing,
-                       List<TierSpec> tiers) {
+                       Integer queuePerMinute, Instant onSaleAt, List<TierSpec> tiers) {
         Map<String, UUID> sectionIds = new HashMap<>();
         for (VenueService.Section s : venues.get(venueId).sections()) {
             sectionIds.put(s.name(), s.id());
@@ -73,10 +78,11 @@ public class EventService {
         UUID eventId = UUID.randomUUID();
         db.sql("""
                 insert into events (id, venue_id, organizer_id, name, starts_at, status, per_fan_limit,
-                                    fee_bps, fee_flat_cents, tax_bps)
-                values (?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)""")
+                                    fee_bps, fee_flat_cents, tax_bps, queue_per_minute, on_sale_at)
+                values (?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?)""")
                 .params(eventId, venueId, by.id(), name, Timestamp.from(startsAt), perFanLimit,
-                        pricing.feeBps(), pricing.feeFlatCents(), pricing.taxBps())
+                        pricing.feeBps(), pricing.feeFlatCents(), pricing.taxBps(), queuePerMinute,
+                        onSaleAt == null ? null : Timestamp.from(onSaleAt))
                 .update();
         for (TierSpec t : tiers) {
             UUID tierId = UUID.randomUUID();
@@ -112,12 +118,14 @@ public class EventService {
 
     public Event get(UUID id) {
         record Row(UUID venueId, UUID organizerId, String name, Instant startsAt, String status, int limit,
-                   Pricing pricing) {}
+                   Pricing pricing, Integer queuePerMinute, Instant onSaleAt) {}
         Row row = db.sql("select * from events where id = ?").param(id)
                 .query((rs, n) -> new Row(rs.getObject("venue_id", UUID.class), rs.getObject("organizer_id", UUID.class),
                         rs.getString("name"), rs.getTimestamp("starts_at").toInstant(), rs.getString("status"),
                         rs.getInt("per_fan_limit"),
-                        new Pricing(rs.getInt("fee_bps"), rs.getInt("fee_flat_cents"), rs.getInt("tax_bps"))))
+                        new Pricing(rs.getInt("fee_bps"), rs.getInt("fee_flat_cents"), rs.getInt("tax_bps")),
+                        rs.getObject("queue_per_minute", Integer.class),
+                        rs.getTimestamp("on_sale_at") == null ? null : rs.getTimestamp("on_sale_at").toInstant()))
                 .optional()
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_event"));
 
@@ -142,7 +150,7 @@ public class EventService {
                             ends == null ? null : ends.toInstant(), sections));
                 });
         return new Event(id, row.venueId(), row.organizerId(), row.name(), row.startsAt(), row.status(), row.limit(),
-                row.pricing(), tiers);
+                row.pricing(), row.queuePerMinute(), row.onSaleAt(), tiers);
     }
 
     /** Organizers can change only their own events; admins can change any. */
@@ -174,7 +182,9 @@ public class EventService {
         if (!created.ok() && created.outcome() != SeatResult.Outcome.ALREADY_EXISTS) {
             throw new IllegalStateException("ledger refused event " + eventId + ": " + created.outcome());
         }
-        db.sql("update events set status = 'ON_SALE' where id = ?").param(eventId).update();
+        // published events are listed straight away; sales start at the scheduled time, or now
+        db.sql("update events set status = 'ON_SALE', on_sale_at = coalesce(on_sale_at, now()) where id = ?")
+                .param(eventId).update();
     }
 
     public record SeatState(String seat, SeatStatus status) {}
@@ -209,7 +219,7 @@ public class EventService {
      */
     public Quote quote(UUID eventId, List<QuoteItem> items, String promo, String fanEmail) {
         Event e = get(eventId);
-        if (!e.status().equals("ON_SALE")) {
+        if (!e.status().equals("ON_SALE") || clock.instant().isBefore(e.onSaleAt())) {
             throw new ApiException(HttpStatus.CONFLICT, "not_on_sale");
         }
         if (items.size() > e.perFanLimit()) {

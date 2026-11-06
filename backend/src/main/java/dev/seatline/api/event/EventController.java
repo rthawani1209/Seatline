@@ -37,6 +37,7 @@ class EventController {
     record EventRequest(@NotNull UUID venueId, @NotBlank @Size(max = 120) String name, @NotNull @Future Instant startsAt,
                         @Min(1) @Max(20) int perFanLimit, @Min(0) @Max(3000) int feeBps,
                         @Min(0) @Max(2000) int feeFlatCents, @Min(0) @Max(2500) int taxBps,
+                        @Min(1) @Max(100_000) Integer queuePerMinute, @Future Instant onSaleAt,
                         @NotEmpty @Size(max = 10) List<@Valid TierRequest> tiers) {}
 
     record PromoRequest(@NotBlank @Pattern(regexp = "[A-Za-z0-9]{3,20}") String code,
@@ -63,7 +64,7 @@ class EventController {
                 .map(t -> new EventService.TierSpec(t.name(), t.kind(), t.priceCents(), t.endsAt(), t.sections()))
                 .toList();
         UUID id = events.create(CurrentUser.of(jwt), r.venueId(), r.name(), r.startsAt(), r.perFanLimit(),
-                new Pricing(r.feeBps(), r.feeFlatCents(), r.taxBps()), tiers);
+                new Pricing(r.feeBps(), r.feeFlatCents(), r.taxBps()), r.queuePerMinute(), r.onSaleAt(), tiers);
         return Map.of("id", id);
     }
 

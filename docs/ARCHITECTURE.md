@@ -5,7 +5,7 @@ Seatline sells seats for sold-out events. The one thing it must never do is sell
 ## The big picture
 
 ```
- fans ──> waiting room ──> API (Spring Boot) ──> seat ledger leader ──> 4 followers
+ fans ──> waiting room (Redis) ──> API (Spring Boot) ──> seat ledger leader ──> 4 followers
                                │                        (5 servers, Raft)
                                └──> Postgres (accounts, events, orders: a read copy of the ledger)
 ```
@@ -92,7 +92,7 @@ The API is what browsers and the door scanner talk to. It owns accounts, events 
 - **Passwords** are hashed with **Argon2id**, a hash designed to be slow and memory-hungry so stolen hashes are expensive to crack. Logging in with an unknown email still runs a hash, so response time doesn't reveal who has an account, and both cases get the same `bad_credentials` answer.
 - **Email verification**: sign-up emails a random code; only its SHA-256 is stored, it works once and expires after 24 hours. Until it's used, login is refused.
 - **Two-factor codes** (optional): the six-digit codes from an authenticator app (TOTP, RFC 6238), written out in [`Totp.java`](../backend/src/main/java/dev/seatline/api/account/Totp.java) and checked against the RFC's own test values. A code is accepted for one 30-second step either side of now, and never twice.
-- **Rate limits**: 5 failed logins per account or 20 per address within 15 minutes, then refused until old failures age out. In memory for now; it moves to Redis with the waiting room so all API servers share the counts. Old entries are swept away so the table can't grow forever. Behind the load balancer the client's real address comes from `X-Forwarded-For`, trusted only when the request arrives from a private-network address (the balancer); otherwise everyone would share the balancer's address and one attacker could lock out every user.
+- **Rate limits**: 5 failed logins per account or 20 per address within 15 minutes, then refused until old failures age out. The counts are kept in memory on each API server, so with several servers the real limit is that many times higher; moving them into Redis next to the waiting room is the fix if that matters. Old entries are swept away so the table can't grow forever. Behind the load balancer the client's real address comes from `X-Forwarded-For`, trusted only when the request arrives from a private-network address (the balancer); otherwise everyone would share the balancer's address and one attacker could lock out every user.
 - **Tokens**: a successful login returns a signed token (JWT, HS256, 1 hour) carrying the user id and role. Clients send it as `Authorization: Bearer ...`. Because it's not a cookie, a malicious site can't make the browser send it, so there's no cross-site request forgery to defend against.
 - **Taking tokens back**: each token carries the user's *token version*. Changing someone's role or turning off their two-factor bumps it, and every request checks the version against the database, so old tokens stop working at once instead of up to an hour later.
 
@@ -115,6 +115,19 @@ Prices and events live in Postgres. Which seats are free, held or sold is only e
 - **Best available** (`GET /events/{id}/best-seats`) suggests seats together in one row: the front-most row that has room wins, then the seats closest to the middle. It can be limited to accessible seats. It only suggests; holding them still goes through the ledger, so two fans offered the same seats can't both get them. Code: [`BestSeats`](../backend/src/main/java/dev/seatline/api/event/BestSeats.java).
 - **Talking to the ledger** goes through [`Seats`](../backend/src/main/java/dev/seatline/api/seats/Seats.java): a fixed pool of 64 ledger sessions. The ledger remembers the last answer for every client id it has seen, so reusing sessions keeps that memory bounded. If no leader answers within 5 seconds the API replies `503 try_again`.
 - **Tests** start a real one-node ledger inside the test JVM ([`TestLedger`](../backend/src/test/java/dev/seatline/api/TestLedger.java)).
+
+### The waiting room
+
+A big on-sale is thousands of fans pressing "buy" in the same second. An organizer can give an event a waiting room with a rate, like 300 fans a minute. Code: [`queue/WaitingRoom.java`](../backend/src/main/java/dev/seatline/api/queue/WaitingRoom.java).
+
+- **Joining** gives the fan a number in line. Joining again keeps the same number, so refreshing the page doesn't lose your place.
+- **Moving the line** needs no background job. Fans let in so far = rate × minutes since the sale opened, so any API server can tell from the clock whether your number has come up. Your place is your number minus that, and the estimated wait is your place divided by the rate.
+- **Unused turns aren't saved up.** A new number is `max(last number, let in so far) + 1`, worked out in one Redis script so two servers can't hand out the same one. If the line sat empty for half an hour, a crowd that arrives now still goes in at the rate.
+- **Arriving early gives no edge.** Organizers can set when sales open. Fans who join before then wait in a separate set with random scores, and the first request after the opening turns them into numbers 1, 2, 3... in that random order (once, guarded inside the same script). A bot that joins the first millisecond is no better off than a person who joined five minutes early.
+- **Getting in** gives a 10-minute pass (a Redis key tied to the account, with a time limit). Holding seats for that event needs the pass; without it the API answers `403 wait_in_queue`.
+- All of it is in Redis, so every API server sees the same line.
+
+**Cooldown.** A fan whose hold runs out unpaid can't hold seats for that event again for 2 minutes, so nobody can keep seats away from others by holding and letting go over and over. Letting a hold go yourself doesn't count.
 
 ### Buying tickets
 

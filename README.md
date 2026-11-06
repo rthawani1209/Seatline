@@ -21,7 +21,7 @@ seatline/
 │   │   ├── client/      client library (finds the leader, retries safely)
 │   │   └── bench/       throughput and failover benchmarks
 │   └── src/main/proto/  ledger.proto: gRPC services and messages
-├── backend/             Spring Boot API: accounts, roles, events, checkout (waiting room coming)
+├── backend/             Spring Boot API: accounts, roles, events, waiting room, checkout
 │   └── src/main/java/dev/seatline/api/
 │       ├── account/     sign-up, email verification, login, two-factor codes, login rate limits
 │       ├── security/    who may call which route, access tokens
@@ -29,6 +29,7 @@ seatline/
 │       ├── event/       events, price tiers, promo codes, all-in pricing and quotes
 │       ├── seats/       the API's connection to the seat ledger
 │       ├── order/       holds, checkout, tickets, transfers and returns
+│       ├── queue/       the waiting room (Redis)
 │       ├── payment/     payment provider interface (stand-in until Stripe keys are set)
 │       └── web/         error responses
 ├── frontend/            Next.js fan and organizer app              (coming)

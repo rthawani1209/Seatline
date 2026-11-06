@@ -8,6 +8,7 @@ import dev.seatline.api.account.User;
 import dev.seatline.api.account.UserRepository;
 import dev.seatline.api.event.EventService;
 import dev.seatline.api.payment.Payments;
+import dev.seatline.api.queue.WaitingRoom;
 import dev.seatline.api.seats.Seats;
 import dev.seatline.api.web.ApiException;
 import dev.seatline.api.web.CurrentUser;
@@ -48,6 +49,8 @@ import java.util.UUID;
 public class OrderService {
 
     static final Duration HOLD_TTL = Duration.ofMinutes(10);
+    /** A fan whose hold ran out unpaid waits this long before holding again, so nobody can sit on seats. */
+    static final Duration COOLDOWN = Duration.ofMinutes(2);
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     public record Hold(String holdId, Instant expiresAt, EventService.Quote quote) {}
@@ -65,9 +68,11 @@ public class OrderService {
     private final Payments payments;
     private final Mailer mailer;
     private final ObjectMapper json;
+    private final WaitingRoom waitingRoom;
 
     public OrderService(JdbcClient db, TransactionTemplate tx, EventService events, AccountService accounts,
-                        UserRepository users, Seats seats, Payments payments, Mailer mailer, ObjectMapper json) {
+                        UserRepository users, Seats seats, Payments payments, Mailer mailer, ObjectMapper json,
+                        WaitingRoom waitingRoom) {
         this.db = db;
         this.tx = tx;
         this.events = events;
@@ -77,9 +82,16 @@ public class OrderService {
         this.payments = payments;
         this.mailer = mailer;
         this.json = json;
+        this.waitingRoom = waitingRoom;
     }
 
     public Hold hold(UUID eventId, CurrentUser fan, List<EventService.QuoteItem> items, String promo) {
+        if (!waitingRoom.mayBuy(events.get(eventId), fan.id())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "wait_in_queue");
+        }
+        if (coolingDown(eventId, fan.id())) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "cooldown");
+        }
         String email = accounts.get(fan.id()).email();
         EventService.Quote quote = events.quote(eventId, items, promo, email);
         List<String> wanted = quote.lines().stream().map(EventService.QuoteLine::seat).toList();
@@ -126,6 +138,7 @@ public class OrderService {
             throw new ApiException(HttpStatus.CONFLICT, "already_paid");
         }
         seats.write(new SeatCommand.Release(h.id()));
+        db.sql("update holds set released_at = now() where id = ?").param(h.id()).update();
         handBackPromo(h);
     }
 
@@ -304,6 +317,16 @@ public class OrderService {
                 .query((rs, n) -> new TicketRow(rs.getString(1), rs.getLong(2), rs.getString(3)))
                 .optional()
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket"));
+    }
+
+    /** True if one of this fan's holds for the event ran out unpaid in the last two minutes. */
+    private boolean coolingDown(UUID eventId, UUID fan) {
+        return db.sql("""
+                select exists (select 1 from holds h
+                    where h.fan_id = ? and h.event_id = ? and h.released_at is null
+                      and h.expires_at <= now() and h.expires_at > now() - make_interval(secs => ?)
+                      and not exists (select 1 from orders o where o.hold_id = h.id))""")
+                .params(fan, eventId, COOLDOWN.toSeconds()).query(Boolean.class).single();
     }
 
     private HoldRow holdRow(String holdId) {

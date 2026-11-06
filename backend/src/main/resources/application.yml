@@ -5,6 +5,9 @@ spring:
     url: ${SEATLINE_DB_URL:jdbc:postgresql://localhost:5432/seatline}
     username: ${SEATLINE_DB_USER:seatline}
     password: ${SEATLINE_DB_PASSWORD:seatline}
+  data:
+    redis:
+      url: ${SEATLINE_REDIS_URL:redis://localhost:6379}
   jpa:
     open-in-view: false
     hibernate:
