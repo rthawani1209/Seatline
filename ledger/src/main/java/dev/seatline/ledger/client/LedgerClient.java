@@ -16,7 +16,9 @@ import dev.seatline.ledger.seats.SeatRequest;
 import dev.seatline.ledger.seats.SeatResult;
 import io.grpc.ManagedChannel;
 import io.grpc.StatusRuntimeException;
+import dev.seatline.ledger.server.Tls;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -55,11 +57,15 @@ public final class LedgerClient implements AutoCloseable {
      * @param timeout how long one write or read keeps retrying before giving up
      */
     public LedgerClient(Map<Integer, String> cluster, Duration timeout) {
+        this(cluster, timeout, null);
+    }
+
+    /** @param tls the API's certificate for mutual TLS, or null for plain text */
+    public LedgerClient(Map<Integer, String> cluster, Duration timeout, Tls tls) {
+        SslContext ssl = tls == null ? null : tls.client();
         cluster.forEach((id, address) -> {
-            ManagedChannel channel = NettyChannelBuilder.forTarget(address)
-                    .usePlaintext()
-                    .maxInboundMessageSize(64 * 1024 * 1024)
-                    .build();
+            NettyChannelBuilder b = NettyChannelBuilder.forTarget(address).maxInboundMessageSize(64 * 1024 * 1024);
+            ManagedChannel channel = (ssl == null ? b.usePlaintext() : b.sslContext(ssl)).build();
             channels.put(id, channel);
             stubs.put(id, LedgerGrpc.newBlockingStub(channel));
         });

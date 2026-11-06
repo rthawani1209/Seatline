@@ -38,19 +38,17 @@ final class PeerLinks implements AutoCloseable {
         volatile ClientCallStreamObserver<RaftMessage> stream;
         long lastWritable;
 
-        Link(String address) {
-            channel = NettyChannelBuilder.forTarget(address)
-                    .usePlaintext()
-                    .maxInboundMessageSize(MAX_MESSAGE_BYTES)
-                    .build();
+        Link(String address, Tls tls) {
+            NettyChannelBuilder b = NettyChannelBuilder.forTarget(address).maxInboundMessageSize(MAX_MESSAGE_BYTES);
+            channel = (tls == null ? b.usePlaintext() : b.sslContext(tls.client())).build();
             stub = RaftGrpc.newStub(channel);
         }
     }
 
-    PeerLinks(int self, Map<Integer, String> addresses) {
+    PeerLinks(int self, Map<Integer, String> addresses, Tls tls) {
         addresses.forEach((id, address) -> {
             if (id != self) {
-                links.put(id, new Link(address));
+                links.put(id, new Link(address, tls));
             }
         });
     }

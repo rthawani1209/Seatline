@@ -27,6 +27,7 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Prometheus metrics: term, commit index, leader, leader changes, writes, write latency | [`Metrics`](../ledger/src/main/java/dev/seatline/ledger/server/Metrics.java); `LedgerClusterTest.exposesPrometheusMetrics` | `mvn -pl ledger test -Dtest=LedgerClusterTest` | |
 | ✅ Ledger throughput on 3 vs 5 servers (each its own JVM, fsync on, 64 concurrent clients) | [`LedgerBench`](../ledger/src/main/java/dev/seatline/ledger/bench/LedgerBench.java), [`results/ledger-throughput.json`](results/ledger-throughput.json) | `scripts/bench.sh` | **3 servers: 11,965 writes/sec, p50 5.0 ms, p99 11.7 ms. 5 servers: 9,831 writes/sec, p50 6.0 ms, p99 14.8 ms** |
 | ✅ Leader failover on a real cluster (leader killed with SIGKILL, 20 times) | `LedgerBench.failover`, [`results/ledger-failover.json`](results/ledger-failover.json) | `scripts/bench.sh` | **5 servers: new leader in 205 ms median (max 350), client writes paused 232 ms median. 3 servers: 219 ms / 255 ms** |
+| ✅ Mutual TLS between ledger nodes and the API; each port also checks the certificate's name (nodes only on the peer port, the API only on the client port) | [`Tls`](../ledger/src/main/java/dev/seatline/ledger/server/Tls.java), [`scripts/certs.sh`](../scripts/certs.sh); [`LedgerTlsTest`](../ledger/src/test/java/dev/seatline/ledger/server/LedgerTlsTest.java) (removing the name checks fails 2 of its 5 tests); all API tests run against a TLS ledger | `mvn -pl ledger test -Dtest=LedgerTlsTest` | |
 
 ## Never double-selling
 

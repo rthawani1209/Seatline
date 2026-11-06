@@ -73,15 +73,22 @@ public final class LedgerServer implements AutoCloseable {
     /**
      * @param cluster every node's peer address ({@code host:port}), used for Raft traffic and, when
      *     enabled, the Admin service; this node listens on the port of its own entry
-     * @param bind the interface both ports listen on. Defaults to localhost: nothing on these ports
-     *     is authenticated yet (mTLS between nodes comes with the deployment), so a deployment has
-     *     to opt in to listening on a real network
+     * @param bind the interface both ports listen on. Defaults to localhost, so a deployment has to
+     *     opt in to listening on a real network
+     * @param tls mutual TLS for both ports and for talking to the other nodes, or null for plain
+     *     text (tests and local runs on localhost)
      * @param clientPort port for the Ledger service, which the API calls
      * @param admin serve the Admin service (crash, revive, partition). Off unless asked for; the
      *     chaos panel reaches it through the authenticated API
      */
     public record Config(int id, Map<Integer, String> cluster, Path dataDir, String bind, int clientPort,
-                         boolean admin, RaftConfig raft) {
+                         boolean admin, RaftConfig raft, Tls tls) {
+
+        public Config(int id, Map<Integer, String> cluster, Path dataDir, String bind, int clientPort,
+                      boolean admin, RaftConfig raft) {
+            this(id, cluster, dataDir, bind, clientPort, admin, raft, null);
+        }
+
         public int[] members() {
             return cluster.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
         }
@@ -121,7 +128,7 @@ public final class LedgerServer implements AutoCloseable {
     public LedgerServer(Config config) {
         this.config = config;
         this.metrics = new Metrics(config.id());
-        this.peers = new PeerLinks(config.id(), config.cluster());
+        this.peers = new PeerLinks(config.id(), config.cluster(), config.tls());
         boot();
 
         // clients and peers get separate ports, so a firewall rule can keep node-to-node traffic
@@ -133,11 +140,16 @@ public final class LedgerServer implements AutoCloseable {
         if (config.admin()) {
             peer.addService(new AdminService());
         }
-        this.peerServer = peer.build();
-        this.clientServer = NettyServerBuilder.forAddress(new InetSocketAddress(config.bind(), config.clientPort()))
+        NettyServerBuilder client = NettyServerBuilder.forAddress(new InetSocketAddress(config.bind(), config.clientPort()))
                 .executor(rpcThreads)
-                .addService(new LedgerService())
-                .build();
+                .addService(new LedgerService());
+        if (config.tls() != null) {
+            // only other nodes on the peer port, only the API on the client port
+            peer.sslContext(config.tls().server()).intercept(Tls.only(Tls::isNode));
+            client.sslContext(config.tls().server()).intercept(Tls.only(Tls.API::equals));
+        }
+        this.peerServer = peer.build();
+        this.clientServer = client.build();
         try {
             peerServer.start();
             clientServer.start();

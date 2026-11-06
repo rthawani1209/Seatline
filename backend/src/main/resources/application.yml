@@ -32,3 +32,8 @@ seatline:
   # client ports of the seat ledger nodes
   ledger: ${SEATLINE_LEDGER:1=localhost:8001,2=localhost:8002,3=localhost:8003}
   ledger-timeout: 5s
+  # mutual TLS with the ledger; set all three in a deployment (files from scripts/certs.sh)
+  # ledger-tls:
+  #   cert: ${SEATLINE_LEDGER_TLS_CERT}
+  #   key: ${SEATLINE_LEDGER_TLS_KEY}
+  #   ca: ${SEATLINE_LEDGER_TLS_CA}

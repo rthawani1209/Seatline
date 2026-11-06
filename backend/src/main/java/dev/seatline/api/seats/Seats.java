@@ -36,7 +36,8 @@ public class Seats {
         if (settings.ledger() == null || settings.ledger().isBlank()) {
             throw new IllegalStateException("seatline.ledger (SEATLINE_LEDGER) must list the ledger nodes, e.g. 1=localhost:8001");
         }
-        this.ledger = new LedgerClient(LedgerMain.parseCluster(settings.ledger()), settings.ledgerTimeout());
+        this.ledger = new LedgerClient(LedgerMain.parseCluster(settings.ledger()), settings.ledgerTimeout(),
+                settings.ledgerTls());
         for (int i = 0; i < SESSIONS; i++) {
             sessions.add(ledger.session());
         }

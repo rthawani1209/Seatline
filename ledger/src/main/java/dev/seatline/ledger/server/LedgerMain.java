@@ -25,10 +25,12 @@ import java.util.concurrent.CountDownLatch;
  *       Compose) only where the network around the nodes is private.
  *   <li>{@code --admin}: also serve the Admin service (crash, partition) on the peer port. Off by
  *       default.
+ *   <li>{@code --tls-cert}, {@code --tls-key}, {@code --tls-ca}: turn on mutual TLS (all three or
+ *       none). Make the files with scripts/certs.sh.
  * </ul>
  *
  * Each flag can also come from the environment (SEATLINE_ID, SEATLINE_CLUSTER, SEATLINE_PORT,
- * SEATLINE_DATA, SEATLINE_BIND, SEATLINE_ADMIN, SEATLINE_METRICS), which is how the Docker image is
+ * SEATLINE_DATA, SEATLINE_BIND, SEATLINE_ADMIN, SEATLINE_METRICS, SEATLINE_TLS_CERT, ...), which is how the Docker image is
  * configured.
  */
 public final class LedgerMain {
@@ -43,11 +45,23 @@ public final class LedgerMain {
         boolean admin = Boolean.parseBoolean(flags.getOrDefault("admin", env("admin", "false")));
         int metricsPort = Integer.parseInt(flags.getOrDefault("metrics", env("metrics", "0")));
 
+        String cert = flags.getOrDefault("tls-cert", env("tls-cert", null));
+        String key = flags.getOrDefault("tls-key", env("tls-key", null));
+        String ca = flags.getOrDefault("tls-ca", env("tls-ca", null));
+        Tls tls = null;
+        if (cert != null || key != null || ca != null) {
+            if (cert == null || key == null || ca == null) {
+                throw new IllegalArgumentException("TLS needs all of --tls-cert, --tls-key and --tls-ca");
+            }
+            tls = new Tls(Path.of(cert), Path.of(key), Path.of(ca));
+        }
+
         LedgerServer server = new LedgerServer(
-                new LedgerServer.Config(id, cluster, data, bind, clientPort, admin, RaftConfig.DEFAULT));
+                new LedgerServer.Config(id, cluster, data, bind, clientPort, admin, RaftConfig.DEFAULT, tls));
         int served = server.metrics().serve(bind, metricsPort);
-        System.out.printf("ledger node %d on %s: clients %d, peers %d%s, metrics %d, data in %s%n", id, bind,
-                server.clientPort(), server.peerPort(), admin ? " (admin on)" : "", served, data);
+        System.out.printf("ledger node %d on %s: clients %d, peers %d%s%s, metrics %d, data in %s%n", id, bind,
+                server.clientPort(), server.peerPort(), admin ? " (admin on)" : "", tls != null ? " (mTLS)" : "",
+                served, data);
 
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -97,7 +111,7 @@ public final class LedgerMain {
     }
 
     private static String env(String name, String fallback) {
-        String value = System.getenv("SEATLINE_" + name.toUpperCase());
+        String value = System.getenv("SEATLINE_" + name.toUpperCase().replace('-', '_'));
         return value != null ? value : fallback;
     }
 }
