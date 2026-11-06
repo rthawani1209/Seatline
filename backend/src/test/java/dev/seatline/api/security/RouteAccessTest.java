@@ -70,6 +70,8 @@ class RouteAccessTest {
         POLICY.put("GET /events/{id}/queue", SIGNED_IN);
         POLICY.put("POST /holds/{id}/checkout", SIGNED_IN);
         POLICY.put("GET /me/tickets", SIGNED_IN);
+        POLICY.put("GET /me/tickets/{id}/qr", SIGNED_IN);
+        POLICY.put("POST /scan", EnumSet.of(Role.DOOR_STAFF, Role.ADMIN));
         POLICY.put("POST /tickets/{id}/transfer", SIGNED_IN);
         POLICY.put("POST /tickets/{id}/return", SIGNED_IN);
     }

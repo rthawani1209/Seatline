@@ -30,6 +30,7 @@ seatline/
 │       ├── seats/       the API's connection to the seat ledger
 │       ├── order/       holds, checkout, tickets, transfers and returns
 │       ├── queue/       the waiting room (Redis)
+│       ├── ticket/      signed QR codes and door scanning
 │       ├── payment/     payment provider interface (stand-in until Stripe keys are set)
 │       └── web/         error responses
 ├── frontend/            Next.js fan and organizer app              (coming)

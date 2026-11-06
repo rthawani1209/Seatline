@@ -146,6 +146,15 @@ Code: [`order/OrderService.java`](../backend/src/main/java/dev/seatline/api/orde
 
 **After buying**, a fan can give a ticket to another account (the ticket's version goes up, so a screenshot of the old QR code stops working) or hand it back for a refund of what they paid, which puts the seat back on sale.
 
+### Tickets at the door
+
+Code: [`ticket/`](../backend/src/main/java/dev/seatline/api/ticket/).
+
+- A ticket's QR code holds `SL1.<ticket id>.<version>.<step>.<signature>`. The signature is an HMAC with a server-side key, so codes can't be made up or edited. The app draws the QR code from that text.
+- **The code changes every 15 seconds.** The step is the current 15-second window; the app fetches a new code as it rolls over, and the door accepts only the current step or one either side. A screenshot sent to someone else is refused as EXPIRED within about half a minute.
+- **Transfers** bump the ticket's version in the ledger, so the old owner's code (or a screenshot of it) stops working while the new owner's works.
+- **Scanning** (door staff only) checks the signature, then asks the ledger whether the ticket still exists and which version is current, then marks it scanned in Postgres with `update ... where scanned_at is null`. Only one update can match, so two doors scanning the same code at the same moment let it in once. The answer is one of OK, ALREADY_SCANNED (with the time of the first scan), WRONG_EVENT, OLD_CODE (from before a transfer), EXPIRED (a stale screenshot) or INVALID.
+
 ### Data
 
 Postgres, with the schema in versioned Flyway migrations ([`db/migration`](../backend/src/main/resources/db/migration/)). All queries go through Spring Data JPA or `JdbcTemplate` with `?` placeholders, never string concatenation, so text from users can't change a query. Tests run against a real Postgres started in Docker by Testcontainers.

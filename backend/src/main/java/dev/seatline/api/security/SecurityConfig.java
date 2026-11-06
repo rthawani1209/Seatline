@@ -63,7 +63,8 @@ public class SecurityConfig {
                                 "/tickets/*/transfer", "/tickets/*/return").authenticated()
                         .requestMatchers(HttpMethod.DELETE, "/holds/*").authenticated()
                         .requestMatchers("/events/*/queue").authenticated()
-                        .requestMatchers(HttpMethod.GET, "/me/tickets").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/me/tickets", "/me/tickets/*/qr").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/scan").hasAnyRole("DOOR_STAFF", "ADMIN")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken())))
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));

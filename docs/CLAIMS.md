@@ -91,6 +91,15 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Fans who arrive before the sale opens are put in random order when it opens | `QueueFlowTest.arrivingBeforeTheSaleOpensDoesntMakeYouFirst` | same | 20 early fans shuffled |
 | ✅ 2-minute cooldown after letting a hold run out unpaid | `QueueFlowTest.lettingAHoldRunOutMeansAShortWaitButReleasingDoesNot` | same | |
 
+## Tickets at the door
+
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Signed QR codes (HMAC-SHA256); made-up or edited codes are refused | [`TicketCodes`](../backend/src/main/java/dev/seatline/api/ticket/TicketCodes.java); `DoorFlowTest.madeUpOrAlteredCodesAreRefused` | `mvn -pl backend -am test -Dtest=DoorFlowTest -Dsurefire.failIfNoSpecifiedTests=false` | |
+| ✅ Each ticket gets in once, even with several doors scanning it at the same moment | `DoorFlowTest.aTicketGetsInOnce`, `twoDoorsScanningTheSameCodeAtOnceLetItInOnce` | same | |
+| ✅ The QR code changes every 15 seconds; a screenshot more than one step old is refused | `DoorFlowTest.aScreenshotOfTheCodeGoesStale` | same | 15 s steps, ±1 accepted |
+| ✅ A transferred ticket's old code stops working; a returned ticket doesn't get in | `DoorFlowTest.aTransferredTicketsOldCodeStopsWorking`, `aReturnedTicketDoesntGetIn` | same | |
+
 ## Still to build
 
-QR tickets and scanner, frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).
+Frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).
