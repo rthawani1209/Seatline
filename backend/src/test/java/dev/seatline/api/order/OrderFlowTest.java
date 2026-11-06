@@ -174,20 +174,39 @@ class OrderFlowTest {
 
     /** Runs checkout with the process "dying" at one step, then lets the reconciler clean up. */
     String crashThenReconcile(String step, boolean holdLostMeanwhile) throws Exception {
+        String holdId = crashAt(step, "FLOOR-A-4");
+        if (holdLostMeanwhile) {
+            ledger.write(new SeatCommand.Release(holdId));
+        }
+        orders.reconcileNow(Duration.ofMinutes(1));
+        return holdId;
+    }
+
+    /** Checkout "dies" at a step; the attempt is made old enough for the reconciler to pick up. */
+    String crashAt(String step, String seat) throws Exception {
         String fan = testUsers.bearer(Role.FAN);
-        String holdId = body(hold(fan, null, "FLOOR-A-4")).get("holdId").asText();
+        String holdId = body(hold(fan, null, seat)).get("holdId").asText();
         doThrow(new IllegalStateException("simulated crash")).when(orders).step(step);
         try {
             assertThatThrownBy(() -> checkout(fan, holdId, "tok_visa")).hasRootCauseMessage("simulated crash");
         } finally {
             doNothing().when(orders).step(step);
         }
-        if (holdLostMeanwhile) {
-            ledger.write(new SeatCommand.Release(holdId));
-        }
         jdbc.update("update payment_attempts set created_at = now() - interval '5 minutes' where hold_id = ?", holdId);
-        orders.reconcileNow(Duration.ofMinutes(1));
         return holdId;
+    }
+
+    @Test
+    void oneBadAttemptDoesntStopTheOthers() throws Exception {
+        String a = crashAt("charged", "FLOOR-A-5");
+        String b = crashAt("charged", "FLOOR-A-6");
+        // the first attempt the reconciler tries blows up; the second must still be finished
+        doThrow(new IllegalStateException("bad row")).doNothing().when(orders).step("confirmed");
+        orders.reconcileNow(Duration.ofMinutes(1));
+        assertThat(orders(a) + orders(b)).isEqualTo(1);
+
+        orders.reconcileNow(Duration.ofMinutes(1)); // and the bad one is retried next round
+        assertThat(orders(a) + orders(b)).isEqualTo(2);
     }
 
     int orders(String holdId) {

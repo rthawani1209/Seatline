@@ -261,25 +261,12 @@ public class OrderService {
                 .query((rs, n) -> new Attempt(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)))
                 .list();
         for (Attempt a : stuck) {
-            HoldRow h = holdRow(a.holdId());
-            String ref = a.ref();
-            if (a.state().equals("CHARGING")) {
-                // we don't know if the charge went through; asking again with the same key tells us
-                Payments.Charge c = payments.charge(a.key(), h.totalCents(), a.token(), "Seatline tickets");
-                if (!c.approved()) {
-                    attemptState(a.key(), "DECLINED", null);
-                    continue;
-                }
-                ref = c.ref();
-                attemptState(a.key(), "CHARGED", ref);
+            // one bad attempt must not stop the rest (or the refunds below) from being handled
+            try {
+                reconcile(a.key(), a.holdId(), a.token(), a.state(), a.ref());
+            } catch (RuntimeException e) {
+                log.warn("couldn't reconcile payment attempt {}, will retry: {}", a.key(), e.toString());
             }
-            if (orderForHold(h.id()).isPresent()) {
-                // the order was saved by another attempt with a different card: this charge is extra
-                queueRefund("attempt:" + a.key(), ref, h.totalCents(), "paid twice for one hold");
-                attemptState(a.key(), "REFUNDED", ref);
-                continue;
-            }
-            finish(h, a.key(), ref);
         }
 
         // holds that ended unpaid give their promo use back
@@ -334,6 +321,27 @@ public class OrderService {
     private void queueRefund(String id, String paymentRef, long cents, String reason) {
         db.sql("insert into refunds (id, payment_ref, amount_cents, reason) values (?, ?, ?, ?) on conflict do nothing")
                 .params(id, paymentRef, cents, reason).update();
+    }
+
+    private void reconcile(String key, String holdId, String token, String state, String ref) {
+        HoldRow h = holdRow(holdId);
+        if (state.equals("CHARGING")) {
+            // we don't know if the charge went through; asking again with the same key tells us
+            Payments.Charge c = payments.charge(key, h.totalCents(), token, "Seatline tickets");
+            if (!c.approved()) {
+                attemptState(key, "DECLINED", null);
+                return;
+            }
+            ref = c.ref();
+            attemptState(key, "CHARGED", ref);
+        }
+        if (orderForHold(h.id()).isPresent()) {
+            // the order was saved by another attempt with a different card: this charge is extra
+            queueRefund("attempt:" + key, ref, h.totalCents(), "paid twice for one hold");
+            attemptState(key, "REFUNDED", ref);
+            return;
+        }
+        finish(h, key, ref);
     }
 
     /** Sends every pending refund. One that fails stays pending for the next round. */
