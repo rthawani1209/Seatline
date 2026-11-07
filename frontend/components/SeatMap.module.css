@@ -1,0 +1,161 @@
+.frame {
+  position: relative;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  /* faint blueprint grid behind the venue */
+  background-image: linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 44px 44px;
+  background-position: -1px -1px;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--raised);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--ground);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.tool {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.tool:hover {
+  background: var(--raised);
+}
+
+.zoom {
+  font-size: 12px;
+  min-width: 42px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.scroller {
+  overflow: auto;
+  max-height: min(72vh, 760px);
+  padding: 14px;
+  display: flex;
+}
+
+.svg {
+  display: block;
+  margin: 0 auto;
+  flex: none;
+  touch-action: manipulation;
+}
+
+.stage {
+  fill: var(--line);
+  stroke: var(--line-strong);
+}
+
+.stageText {
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.4em;
+  fill: var(--ink-2);
+}
+
+.sectionText {
+  font-family: var(--font-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  fill: var(--muted);
+}
+
+.rowText {
+  font-family: var(--font-mono), monospace;
+  font-size: 9px;
+  fill: var(--faint);
+}
+
+.seat rect {
+  transition: fill 0.25s, stroke 0.25s, transform 0.15s;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.seat:focus {
+  outline: none;
+}
+
+.seat:focus-visible rect {
+  stroke: var(--focus);
+  stroke-width: 3px;
+}
+
+.free {
+  cursor: pointer;
+}
+
+.free rect {
+  fill: var(--seat-free);
+}
+
+.free:hover rect {
+  transform: scale(1.18);
+}
+
+.free.accessible rect {
+  fill: var(--seat-access);
+}
+
+.held rect {
+  stroke: var(--seat-held);
+  stroke-width: 1.5px;
+  stroke-dasharray: 3 2;
+}
+
+.heldStripe {
+  fill: var(--line-strong);
+}
+
+.sold rect {
+  fill: var(--seat-sold);
+  stroke: var(--seat-sold);
+}
+
+.off rect {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1px;
+}
+
+.picked rect {
+  fill: var(--accent) !important;
+  stroke: var(--accent-soft);
+  stroke-width: 6px;
+  paint-order: stroke;
+  opacity: 1;
+}
+
+.slash {
+  stroke: var(--ground);
+  stroke-width: 1.6px;
+  pointer-events: none;
+}

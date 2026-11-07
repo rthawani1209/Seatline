@@ -1,0 +1,73 @@
+.shell {
+  min-height: calc(100vh - 64px);
+  display: grid;
+  place-items: center;
+  padding: 40px 20px 80px;
+}
+
+.card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.top {
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 22px 24px 18px;
+}
+
+.top h1 {
+  margin: 4px 0 0;
+  font-size: 44px;
+}
+
+.tear {
+  position: relative;
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.tear::before,
+.tear::after {
+  content: "";
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ground);
+  top: 0;
+}
+
+.tear::before {
+  left: -12px;
+}
+
+.tear::after {
+  right: -12px;
+}
+
+.tear span {
+  flex: 1;
+  margin: 0 20px;
+  border-top: 2px dashed var(--line-strong);
+}
+
+.form {
+  padding: 4px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.alt {
+  font-size: 14px;
+  color: var(--muted);
+  text-align: center;
+  margin: 0;
+}

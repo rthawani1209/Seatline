@@ -1,0 +1,286 @@
+.page {
+  padding: 32px 20px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.title {
+  font-size: clamp(40px, 6vw, 72px);
+  margin: 6px 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.headActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  min-width: 0;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tileBig {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.tileBig :global(.eyebrow) {
+  color: inherit;
+}
+
+.tileValue {
+  font-size: clamp(20px, 2.2vw, 28px);
+  overflow-wrap: anywhere;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.tileValue small {
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.proof {
+  grid-column: span 2;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proofValue {
+  font-size: 52px;
+}
+
+.chart {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chartHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.bars {
+  height: 140px;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bars span {
+  flex: 1;
+  min-height: 2px;
+  background: var(--ink);
+  border-radius: 2px 2px 0 0;
+  transition: height 0.4s;
+}
+
+.bars span:last-child {
+  background: var(--accent);
+}
+
+.promo {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.promoForm {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.added {
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.chaos {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.node {
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+}
+
+.node[data-state="leader"] {
+  border: 2px solid var(--accent);
+}
+
+.node[data-state="down"],
+.node[data-state="gone"] {
+  border: 1px dashed var(--line-strong);
+  background: var(--sunk);
+  color: var(--muted);
+}
+
+.nodeHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--sunk);
+  border: 1px solid var(--line-strong);
+}
+
+.node[data-state="leader"] .badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.nodeStats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.nodeStats dt {
+  color: var(--muted);
+}
+
+.nodeStats dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 700;
+}
+
+.nodeBar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sunk);
+  overflow: hidden;
+}
+
+.nodeBar span {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  transition: width 0.4s;
+}
+
+.node[data-state="leader"] .nodeBar span {
+  background: var(--accent);
+}
+
+.nodeNote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 1.5em;
+}
+
+.nodeActions {
+  display: flex;
+  gap: 8px;
+}
+
+.nodeActions > * {
+  flex: 1;
+}
+
+.log {
+  padding: 16px;
+}
+
+.logList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.logList li {
+  display: flex;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.logList li .mono {
+  color: var(--muted);
+  font-size: 12px;
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .promoForm {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .proof {
+    grid-column: span 1;
+  }
+}
