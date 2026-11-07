@@ -5,12 +5,12 @@ Seatline sells seats for sold-out events. The one thing it must never do is sell
 ## The big picture
 
 ```
- fans ──> waiting room (Redis) ──> API (Spring Boot) ──> seat ledger leader ──> 4 followers
-                               │                        (5 servers, Raft)
-                               └──> Postgres (accounts, events, orders: a read copy of the ledger)
+ browser ──> web app (Next.js) ──> API (Spring Boot) ──> seat ledger leader ──> 4 followers
+                                    │   │                 (5 servers, Raft, mutual TLS)
+                  waiting room (Redis) ─┘   └──> Postgres (accounts, events, orders: a read copy of the ledger)
 ```
 
-The **seat ledger** is the only place that decides who owns a seat. The API asks it to hold and sell seats; everything else (Postgres, browsers) follows what the ledger says. *(The API, waiting room and frontend are still being built; this file grows with them.)*
+The **seat ledger** is the only place that decides who owns a seat. The API asks it to hold and sell seats; everything else (Postgres, browsers) follows what the ledger says.
 
 ## The seat ledger
 
@@ -67,9 +67,9 @@ Each ledger server is one Java process ([`server/LedgerServer.java`](../ledger/s
 
 **Metrics.** Each server serves Prometheus metrics on `/metrics`: term, commit index, whether it's leader, leader changes, elections started, writes by outcome and a write-latency histogram ([`server/Metrics.java`](../ledger/src/main/java/dev/seatline/ledger/server/Metrics.java)).
 
-**Ports and who can reach them.** Each server has two ports. The **client port** serves only the Ledger service, for the API. The **peer port** serves Raft and, only if the server was started with `--admin`, the Admin service. Both listen on localhost unless `--bind` says otherwise. Admin stays off in a deployment; the chaos panel reaches it through the authenticated API.
+**Ports and who can reach them.** Each server has two ports. The **client port** serves only the Ledger service, for the API. The **peer port** serves Raft and, only if the server was started with `--admin`, the Admin service. Both listen on localhost unless `--bind` says otherwise. Browsers never reach the Admin service: the chaos panel calls the API (admins only), and the API calls Admin over mutual TLS with its own certificate. In Docker Compose the ledger ports are only on a private network shared with the API. A public deployment can leave `--admin` off and the chaos panel simply says it's off.
 
-**Mutual TLS.** In a deployment every connection is encrypted and both ends prove who they are ([`server/Tls.java`](../ledger/src/main/java/dev/seatline/ledger/server/Tls.java)). [`scripts/certs.sh`](../scripts/certs.sh) makes a private certificate authority plus a certificate for each node (`ledger-1` ... `ledger-5`) and one for the API (`api`). A connection needs a certificate from that authority, and each port also checks the name on it: the peer port only accepts `ledger-N`, the client port only `api`. So a stranger on the network can't connect at all, and even the API's own certificate can't be used to pretend to be a Raft leader and overwrite the seat log. The API's tests run against a TLS ledger, so the API side is checked on every build too.
+**Mutual TLS.** In a deployment every connection is encrypted and both ends prove who they are ([`server/Tls.java`](../ledger/src/main/java/dev/seatline/ledger/server/Tls.java)). [`scripts/certs.sh`](../scripts/certs.sh) makes a private certificate authority plus a certificate for each node (`ledger-1` ... `ledger-5`) and one for the API (`api`). A connection needs a certificate from that authority, and each port also checks the name on it: Raft only accepts `ledger-N`, the client port only `api`, and the Admin service accepts `ledger-N` or `api`. So a stranger on the network can't connect at all, and even the API's own certificate can't be used to pretend to be a Raft leader and overwrite the seat log. The API's tests run against a TLS ledger, so the API side is checked on every build too.
 
 Run a node: `java -cp ... dev.seatline.ledger.server.LedgerMain --id 1 --cluster 1=localhost:7001,2=localhost:7002,3=localhost:7003 --port 8001 --data data/node1 --metrics 9101`.
 
@@ -158,3 +158,22 @@ Code: [`ticket/`](../backend/src/main/java/dev/seatline/api/ticket/).
 ### Data
 
 Postgres, with the schema in versioned Flyway migrations ([`db/migration`](../backend/src/main/resources/db/migration/)). All queries go through Spring Data JPA or `JdbcTemplate` with `?` placeholders, never string concatenation, so text from users can't change a query. Tests run against a real Postgres started in Docker by Testcontainers.
+
+## The web app (Next.js)
+
+Code: [`frontend/`](../frontend/).
+
+- **One origin.** The browser only talks to the Next.js server; [`app/api/[...path]`](../frontend/app/api/) passes each request on to the Spring Boot API (`SEATLINE_API_URL`). So there's no CORS to open up, and the API can sit on a private network.
+- **Sign-in** keeps the API's access token in the browser and sends it as a bearer token. Every rule about who may do what lives in the API; the app only hides buttons a person can't use.
+- **Live data by polling**, not sockets: the seat map every 2 seconds, place in line every 3, the organizer dashboard every 2, the chaos panel every second. Simple, works through any proxy, and the API's reads are cheap because the seat map comes from the ledger's memory.
+- **The seat map** is one SVG drawn from the venue's x/y layout. Each seat is a labelled button for screen readers; arrow keys move between seats and Enter or Space picks one. It fits itself to the screen and can be zoomed and dragged. A seat someone else takes drops out of your picks on the next poll, and the hold button says why if it fails.
+- **Holds survive a reload**: the hold id is kept for the tab so checkout can be reopened, and the API's `GET /holds/{id}` says whether it's still open, paid, released or expired.
+- **Door scanner** uses the phone camera (jsQR reads the frames) with a typed-code fallback.
+- **Browser tests** ([`e2e/`](../frontend/e2e/)) run every flow against the real stack in a desktop browser and an emulated phone, plus axe accessibility checks in both themes.
+
+## Running it
+
+[`docker-compose.yml`](../docker-compose.yml) runs everything on one machine. A one-off `certs` container makes the certificate authority and the node and API certificates into a volume, then deletes the authority's private key, so no new certificates can be made from it. The five ledger nodes sit on a `ledger` network with the API and nothing else; Postgres, Redis, the API and the web app share an `app` network, and only the web app (port 3000) and, for local use, the API and Postgres on 127.0.0.1 are published. The images ([`infra/docker/`](../infra/docker/)) run as a non-root user; the Java image is built once and split into a ledger target and an API target.
+
+CI builds the images, starts the stack and runs the browser tests on every push.
+

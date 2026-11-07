@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runs the same steps as CI. Run this before pushing.
+# CI also runs the browser tests against the Docker stack; see frontend/e2e/README.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -12,3 +13,6 @@ fi
 mvn -B verify
 mvn -B -pl ledger test -Dtest=RandomizedSafetyTest -Dseatline.sim.runs=2000
 mvn -B -pl ledger test -Dtest=SeatChaosTest -Dseatline.chaos.runs=1000
+
+# the web app has to typecheck and build
+(cd frontend && { [ -d node_modules ] || npm ci; } && npm run typecheck && npm run build)

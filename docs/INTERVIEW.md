@@ -2,7 +2,7 @@
 
 How to talk about Seatline, in plain words. Each section: what it is, why it's done this way, the trade-off, what breaks without it, and follow-up questions with answers. Numbers come from [`CLAIMS.md`](CLAIMS.md).
 
-*This file grows with the build. Sections for the waiting room, payments, tickets, security and the frontend are added as those parts land.*
+*This file grows with the build. Sections for the load test and the AWS deploy are added as those parts land.*
 
 ## The 30-second pitch
 
@@ -91,5 +91,11 @@ Each fan who joins gets the next number from a Redis counter. The line moves at 
 The QR code carries the ticket id, a version and the current 15-second time step, signed with an HMAC only the server knows, so you can't make one up. The app refreshes the code every 15 seconds and the door accepts only the current step or one either side, so a screenshot sold to someone else goes stale in about half a minute. Transferring a ticket bumps its version in the ledger, so the seller's code stops working for good. At the door, the scan marks the ticket with an `update ... where scanned_at is null`, which only one request can win, so the same code at two doors gets in once. The trade-off: scanning needs the network. An offline scanner would need to download the event's valid codes ahead of time and sync scans afterwards, which I left out.
 
 ### How do the ledger servers know who they're talking to?
-Mutual TLS with a private certificate authority. Every node and the API get a certificate, and both sides of every connection show theirs, so a stranger can't even connect. CA-signed isn't enough on its own, though: the API's certificate is CA-signed too, and if it leaked it could be used to send fake Raft messages and overwrite the seat log. So each port also checks the name in the certificate: the Raft port only accepts `ledger-N`, the client port only `api`. There's a test for each case, and I checked the tests fail when the name check is removed.
+Mutual TLS with a private certificate authority. Every node and the API get a certificate, and both sides of every connection show theirs, so a stranger can't even connect. CA-signed isn't enough on its own, though: the API's certificate is CA-signed too, and if it leaked it could be used to send fake Raft messages and overwrite the seat log. So each port also checks the name in the certificate: Raft only accepts `ledger-N`, the client port only `api`, and the admin controls (crash, revive, cut off, used by the chaos panel) accept a node or the API. There's a test for each case, including a certificate from the same authority with a different name, and I checked the tests fail when any name check is loosened.
+
+### How do you know the frontend actually works?
+Playwright tests drive a real browser through every flow against the whole stack in Docker: five ledger nodes, the API, Postgres and Redis. Sign up and verify with the emailed code, pick seats on the map, get a card declined then pay, send a ticket to a friend, return one, go through the waiting room, scan at the door, and an admin crashing the ledger's leader from the chaos panel while sales carry on. One test runs on an emulated phone and checks nothing is wider than the screen. axe checks the main pages in both themes for accessibility problems. CI runs them on every push. The tests don't mock the API, so a passing run means the screens and the backend agree.
+
+### Why polling instead of WebSockets for the live seat map?
+Every 2 seconds the page asks for the seat map, which the API reads from the ledger's memory, so it's cheap. Polling works through every proxy and load balancer without sticky sessions, and if a request fails the next one just tries again. The trade-off is up to 2 seconds of lag, which the hold step covers anyway: if someone takes your seat first, the hold is refused and the seat drops out of your picks. For a much bigger venue I'd push changes with server-sent events from the API and keep polling as the fallback.
 

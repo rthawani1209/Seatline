@@ -27,7 +27,7 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ Prometheus metrics: term, commit index, leader, leader changes, writes, write latency | [`Metrics`](../ledger/src/main/java/dev/seatline/ledger/server/Metrics.java); `LedgerClusterTest.exposesPrometheusMetrics` | `mvn -pl ledger test -Dtest=LedgerClusterTest` | |
 | ✅ Ledger throughput on 3 vs 5 servers (each its own JVM, fsync on, 64 concurrent clients) | [`LedgerBench`](../ledger/src/main/java/dev/seatline/ledger/bench/LedgerBench.java), [`results/ledger-throughput.json`](results/ledger-throughput.json) | `scripts/bench.sh` | **3 servers: 11,965 writes/sec, p50 5.0 ms, p99 11.7 ms. 5 servers: 9,831 writes/sec, p50 6.0 ms, p99 14.8 ms** |
 | ✅ Leader failover on a real cluster (leader killed with SIGKILL, 20 times) | `LedgerBench.failover`, [`results/ledger-failover.json`](results/ledger-failover.json) | `scripts/bench.sh` | **5 servers: new leader in 205 ms median (max 350), client writes paused 232 ms median. 3 servers: 219 ms / 255 ms** |
-| ✅ Mutual TLS between ledger nodes and the API; each port also checks the certificate's name (nodes only on the peer port, the API only on the client port) | [`Tls`](../ledger/src/main/java/dev/seatline/ledger/server/Tls.java), [`scripts/certs.sh`](../scripts/certs.sh); [`LedgerTlsTest`](../ledger/src/test/java/dev/seatline/ledger/server/LedgerTlsTest.java) (removing the name checks fails 2 of its 5 tests); all API tests run against a TLS ledger | `mvn -pl ledger test -Dtest=LedgerTlsTest` | |
+| ✅ Mutual TLS between ledger nodes and the API; each port also checks the certificate's name (Raft traffic only from nodes, the client port only from the API, the admin controls only from nodes or the API) | [`Tls`](../ledger/src/main/java/dev/seatline/ledger/server/Tls.java), [`scripts/certs.sh`](../scripts/certs.sh); [`LedgerTlsTest`](../ledger/src/test/java/dev/seatline/ledger/server/LedgerTlsTest.java) (6 tests; a certificate from the same CA with another name is refused everywhere, and loosening any name check fails a test); all API tests run against a TLS ledger | `mvn -pl ledger test -Dtest=LedgerTlsTest` | |
 
 ## Never double-selling
 
@@ -101,6 +101,21 @@ Status: ✅ built and proven · 🛠 planned (day of the build plan in brackets)
 | ✅ The QR code changes every 15 seconds; a screenshot more than one step old is refused | `DoorFlowTest.aScreenshotOfTheCodeGoesStale` | same | 15 s steps, ±1 accepted |
 | ✅ A transferred ticket's old code stops working; a returned ticket doesn't get in | `DoorFlowTest.aTransferredTicketsOldCodeStopsWorking`, `aReturnedTicketDoesntGetIn` | same | |
 
-## Still to build
+## Web app
 
-Frontend, Docker and AWS rows are added as each lands (days 5 to 12 of the build plan).
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Next.js app for fans, organizers and door staff: sign-up with email verification, seat map, waiting room, checkout, tickets with send and return, event builder, live dashboard, door scanner | [`frontend/app/`](../frontend/app/) | `docker compose up -d --build`, open http://localhost:3000 | |
+| ✅ Browser tests drive every screen against the real stack (5 ledger nodes, API, Postgres, Redis) on a desktop browser and an emulated phone | [`frontend/e2e/`](../frontend/e2e/), CI job `e2e` | see [`frontend/e2e/README.md`](../frontend/e2e/README.md) | 24 tests |
+| ✅ The seat map works from the keyboard (arrow keys, Enter/Space) and with a screen reader (each seat is a labelled button) | [`SeatMap`](../frontend/components/SeatMap.tsx); e2e "the seat map works from the keyboard" | same | |
+| ✅ No automated accessibility violations (axe, WCAG 2.1 A and AA rules) on the home, sign-in, sign-up, seat picker and tickets pages, in dark and light themes | e2e "main pages have no accessibility violations" | same | 0 violations, 5 pages × 2 themes |
+| ✅ Organizer dashboard: live seats left, held, sold, revenue, people waiting, scanned, and a double-sold count (tickets issued in Postgres minus seats the ledger says are sold) | [`OrganizerController`](../backend/src/main/java/dev/seatline/api/organizer/OrganizerController.java), [`frontend/app/organizer/events/[id]`](../frontend/app/organizer/events/); `OrderFlowTest.theOrganizerSeesLiveSalesForTheirEventOnly`, e2e "live numbers update as fans buy" | same | |
+| ✅ Chaos panel: an admin crashes the ledger's leader from the browser, a new one is elected, and sales carry on | [`ChaosController`](../backend/src/main/java/dev/seatline/api/seats/ChaosController.java), [`LedgerAdmin`](../backend/src/main/java/dev/seatline/api/seats/LedgerAdmin.java); `ChaosFlowTest`, e2e "an admin kills the ledger's leader..." | same | |
+
+## Running it
+
+| Claim | Proof | Reproduce | Measured |
+|---|---|---|---|
+| ✅ Docker images for the ledger, API and web app; one Compose file runs the whole stack with the five ledger nodes on their own network, talking over mutual TLS | [`infra/docker/`](../infra/docker/), [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d --build` | |
+| 🛠 AWS deploy with Terraform | | | |
+| 🛠 Real email sending (confirmation codes are written to the `outbox_emails` table for now) | | | |

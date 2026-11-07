@@ -2,9 +2,9 @@
 
 Ticketing for sold-out events that never sells a seat twice, even when servers crash in the middle of the rush.
 
-When thousands of fans hit "Buy" in the same second, ticketing sites tend to fall over or hand the same seat to two people. Seatline puts fans through a fair waiting room, holds seats for five minutes while they pay, and records every sale in a seat ledger copied across five servers that vote on each change (the Raft consensus algorithm, written from scratch in Java). A sale only counts once three of the five agree, so you can switch two servers off mid-sale and nothing is lost or double-sold.
+When thousands of fans hit "Buy" in the same second, ticketing sites tend to fall over or hand the same seat to two people. Seatline puts fans through a fair waiting room, holds seats for ten minutes while they pay, and records every sale in a seat ledger copied across five servers that vote on each change (the Raft consensus algorithm, written from scratch in Java). A sale only counts once three of the five agree, so you can switch two servers off mid-sale and nothing is lost or double-sold.
 
-> Work in progress. The seat ledger is being built first, because everything else depends on it being correct.
+> Work in progress: the ledger, API, web app and Docker setup are done; the load test and AWS deploy are next.
 
 ## Repo layout
 
@@ -33,15 +33,36 @@ seatline/
 │       ├── ticket/      signed QR codes and door scanning
 │       ├── payment/     payment provider interface (stand-in until Stripe keys are set)
 │       └── web/         error responses
-├── frontend/            Next.js fan and organizer app              (coming)
+├── frontend/            Next.js web app for fans, organizers and door staff
+│   ├── app/             pages: events, seat picker, waiting room, checkout, tickets, sign-in,
+│   │                    organizer (event builder, live dashboard, chaos panel), door scanner,
+│   │                    and api/ which passes requests through to the Spring Boot API
+│   ├── components/      seat map, header, ticket QR code, dialogs
+│   ├── lib/             API client, sign-in state, polling hooks, formatting
+│   └── e2e/             Playwright browser tests against the whole stack (desktop and phone)
 ├── loadtest/            Gatling "simulate a sell-out"              (coming)
-├── infra/               Docker and AWS Terraform                   (coming)
+├── infra/
+│   └── docker/          Dockerfiles for the ledger, the API and the web app
+│                        (AWS Terraform coming)
 ├── scripts/             check.sh (same checks as CI), chaos.sh and bench.sh (write docs/results/), certs.sh (TLS)
 ├── docs/                ARCHITECTURE, INTERVIEW, CLAIMS (every claim and its proof), results/
+├── docker-compose.yml   the whole stack on one machine: 5 ledger nodes with mutual TLS, API,
+│                        Postgres, Redis, web app
 └── pom.xml              Maven build for the Java modules
 ```
 
-## Running a cluster
+## Running everything
+
+You need Docker.
+
+```
+docker compose up -d --build
+```
+
+Then open http://localhost:3000. The first start makes the TLS certificates for the five ledger nodes and the API. Emails aren't sent yet: confirmation codes go to the `outbox_emails` table in Postgres (`docker compose exec postgres psql -U seatline -c 'select body from outbox_emails order by id desc limit 1'`). Set `SEATLINE_JWT_SECRET` in a `.env` file to keep people signed in across API restarts.
+
+## Running a ledger cluster by hand
+
 
 ```
 mvn -q -pl ledger compile dependency:build-classpath -Dmdep.outputFile=target/bench.cp
@@ -61,7 +82,7 @@ You need Java 21, Maven 3.9+ and Docker (the API tests start a real Postgres wit
 mvn test
 ```
 
-`scripts/check.sh` runs exactly what CI runs.
+`scripts/check.sh` runs what CI runs, apart from the browser tests, which need the Docker stack up: see [`frontend/e2e/README.md`](frontend/e2e/README.md).
 
 The ledger tests run on a simulated network with a fixed random seed, so every run is repeatable. `RandomizedSafetyTest` runs hundreds of seeded scenarios with dropped, delayed and duplicated messages, crashed servers and network splits, some of them writing real log files to disk and recovering from them after simulated power cuts. Pass `-Dseatline.sim.runs=5000` to run more.
 
