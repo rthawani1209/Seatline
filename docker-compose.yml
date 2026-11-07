@@ -1,0 +1,192 @@
+# The whole of Seatline on one machine: five ledger nodes with mutual TLS, the API, Postgres,
+# Redis and the web app.
+#
+#   docker compose up --build        then open http://localhost:3000
+#
+# The certificates are made on first start into the "certs" volume. Set SEATLINE_JWT_SECRET
+# (32+ random bytes, base64) in a .env file to keep sign-ins working across API restarts.
+
+x-ledger: &ledger
+  build:
+    context: .
+    dockerfile: infra/docker/java.Dockerfile
+    target: ledger
+  image: seatline-ledger
+  restart: unless-stopped
+  depends_on:
+    certs:
+      condition: service_completed_successfully
+  volumes:
+    - certs:/certs:ro
+  networks: [ledger]
+
+services:
+  certs:
+    image: alpine:3.20
+    volumes:
+      - certs:/certs
+      - ./scripts/certs.sh:/certs.sh:ro
+    # only the first time; the nodes keep their identity across restarts
+    command: sh -c "[ -f /certs/ca.crt ] || (apk add --no-cache bash openssl >/dev/null && bash /certs.sh /certs 5 825 && chmod 644 /certs/*.key && rm -f /certs/ca.key)"
+
+  ledger-1:
+    <<: *ledger
+    hostname: ledger-1
+    environment:
+      SEATLINE_ID: "1"
+      SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_PORT: "8000"
+      SEATLINE_METRICS: "9100"
+      SEATLINE_ADMIN: "true"
+      SEATLINE_TLS_CERT: /certs/ledger-1.crt
+      SEATLINE_TLS_KEY: /certs/ledger-1.key
+      SEATLINE_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+      - ledger-1:/data
+
+  ledger-2:
+    <<: *ledger
+    hostname: ledger-2
+    environment:
+      SEATLINE_ID: "2"
+      SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_PORT: "8000"
+      SEATLINE_METRICS: "9100"
+      SEATLINE_ADMIN: "true"
+      SEATLINE_TLS_CERT: /certs/ledger-2.crt
+      SEATLINE_TLS_KEY: /certs/ledger-2.key
+      SEATLINE_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+      - ledger-2:/data
+
+  ledger-3:
+    <<: *ledger
+    hostname: ledger-3
+    environment:
+      SEATLINE_ID: "3"
+      SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_PORT: "8000"
+      SEATLINE_METRICS: "9100"
+      SEATLINE_ADMIN: "true"
+      SEATLINE_TLS_CERT: /certs/ledger-3.crt
+      SEATLINE_TLS_KEY: /certs/ledger-3.key
+      SEATLINE_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+      - ledger-3:/data
+
+  ledger-4:
+    <<: *ledger
+    hostname: ledger-4
+    environment:
+      SEATLINE_ID: "4"
+      SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_PORT: "8000"
+      SEATLINE_METRICS: "9100"
+      SEATLINE_ADMIN: "true"
+      SEATLINE_TLS_CERT: /certs/ledger-4.crt
+      SEATLINE_TLS_KEY: /certs/ledger-4.key
+      SEATLINE_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+      - ledger-4:/data
+
+  ledger-5:
+    <<: *ledger
+    hostname: ledger-5
+    environment:
+      SEATLINE_ID: "5"
+      SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_PORT: "8000"
+      SEATLINE_METRICS: "9100"
+      SEATLINE_ADMIN: "true"
+      SEATLINE_TLS_CERT: /certs/ledger-5.crt
+      SEATLINE_TLS_KEY: /certs/ledger-5.key
+      SEATLINE_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+      - ledger-5:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: seatline
+      POSTGRES_PASSWORD: seatline
+      POSTGRES_DB: seatline
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    # on localhost only, for the end-to-end tests (they read the email outbox)
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "seatline"]
+      interval: 2s
+      retries: 30
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+    networks: [app]
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      target: api
+    image: seatline-api
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ledger-1: { condition: service_started }
+      ledger-2: { condition: service_started }
+      ledger-3: { condition: service_started }
+      ledger-4: { condition: service_started }
+      ledger-5: { condition: service_started }
+    environment:
+      SEATLINE_DB_URL: jdbc:postgresql://postgres:5432/seatline
+      SEATLINE_REDIS_URL: redis://redis:6379
+      SEATLINE_LEDGER: "1=ledger-1:8000,2=ledger-2:8000,3=ledger-3:8000,4=ledger-4:8000,5=ledger-5:8000"
+      SEATLINE_LEDGER_ADMIN: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+      SEATLINE_LEDGERTLS_CERT: /certs/api.crt
+      SEATLINE_LEDGERTLS_KEY: /certs/api.key
+      SEATLINE_LEDGERTLS_CA: /certs/ca.crt
+      SEATLINE_JWT_SECRET: ${SEATLINE_JWT_SECRET:-}
+      SEATLINE_PUBLIC_URL: ${SEATLINE_PUBLIC_URL:-http://localhost:3000}
+    volumes:
+      - certs:/certs:ro
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [app, ledger]
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    image: seatline-web
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      SEATLINE_API_URL: http://api:8080
+    ports: ["3000:3000"]
+    networks: [app]
+
+# the ledger nodes are only reachable from each other and the API
+networks:
+  app:
+  ledger:
+
+volumes:
+  certs:
+  postgres:
+  ledger-1:
+  ledger-2:
+  ledger-3:
+  ledger-4:
+  ledger-5:

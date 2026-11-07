@@ -1,0 +1,7 @@
+**/target
+**/node_modules
+frontend/.next
+frontend/test-results
+frontend/playwright-report
+data
+.git
