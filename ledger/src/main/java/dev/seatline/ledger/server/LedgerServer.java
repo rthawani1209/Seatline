@@ -144,8 +144,10 @@ public final class LedgerServer implements AutoCloseable {
                 .executor(rpcThreads)
                 .addService(new LedgerService());
         if (config.tls() != null) {
-            // only other nodes on the peer port, only the API on the client port
-            peer.sslContext(config.tls().server()).intercept(Tls.only(Tls::isNode));
+            // only other nodes speak Raft, only the API uses the client port; the admin controls
+            // (if on) also take the API, for the chaos panel
+            peer.sslContext(config.tls().server()).intercept(Tls.only((service, name) -> Tls.isNode(name)
+                    || (service.equals(AdminGrpc.SERVICE_NAME) && Tls.API.equals(name))));
             client.sslContext(config.tls().server()).intercept(Tls.only(Tls.API::equals));
         }
         this.peerServer = peer.build();

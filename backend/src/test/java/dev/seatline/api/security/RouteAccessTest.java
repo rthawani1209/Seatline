@@ -74,6 +74,14 @@ class RouteAccessTest {
         POLICY.put("POST /scan", EnumSet.of(Role.DOOR_STAFF, Role.ADMIN));
         POLICY.put("POST /tickets/{id}/transfer", SIGNED_IN);
         POLICY.put("POST /tickets/{id}/return", SIGNED_IN);
+        POLICY.put("GET /holds/{id}", SIGNED_IN);
+        POLICY.put("GET /organizer/events", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("GET /events/{id}/stats", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("GET /admin/ledger", EnumSet.of(Role.ADMIN));
+        POLICY.put("POST /admin/ledger/{id}/crash", EnumSet.of(Role.ADMIN));
+        POLICY.put("POST /admin/ledger/{id}/revive", EnumSet.of(Role.ADMIN));
+        POLICY.put("POST /admin/ledger/{id}/cut-off", EnumSet.of(Role.ADMIN));
+        POLICY.put("POST /admin/ledger/heal", EnumSet.of(Role.ADMIN));
     }
 
     @Autowired MockMvc mvc;

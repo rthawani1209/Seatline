@@ -133,6 +133,19 @@ public class WaitingRoom {
         return new Status(false, position, position * 60 / e.queuePerMinute(), null, null);
     }
 
+    /** Fans still waiting in line (or, before the sale opens, waiting for it to open). */
+    public long waiting(EventService.Event e) {
+        if (e.queuePerMinute() == null || !"ON_SALE".equals(e.status())) {
+            return 0;
+        }
+        if (!isOpen(e)) {
+            Long early = redis.opsForZSet().zCard(earlyKey(e));
+            return early == null ? 0 : early;
+        }
+        Long ahead = redis.opsForZSet().count(lineKey(e), letIn(e) + 1, Double.POSITIVE_INFINITY);
+        return ahead == null ? 0 : ahead;
+    }
+
     /** How many fans the line has let in so far. */
     long letIn(EventService.Event e) {
         long ms = Math.max(0, Duration.between(e.onSaleAt(), clock.instant()).toMillis());

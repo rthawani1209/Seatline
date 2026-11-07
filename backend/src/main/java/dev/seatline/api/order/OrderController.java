@@ -46,6 +46,11 @@ class OrderController {
         return orders.hold(id, CurrentUser.of(jwt), items, r.promoCode());
     }
 
+    @GetMapping("/holds/{id}")
+    OrderService.HoldView hold(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
+        return orders.holdView(id, CurrentUser.of(jwt));
+    }
+
     @DeleteMapping("/holds/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void release(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {

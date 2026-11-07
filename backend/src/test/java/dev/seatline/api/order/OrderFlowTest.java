@@ -132,6 +132,56 @@ class OrderFlowTest {
     }
 
     @Test
+    void aFanCanLookUpTheirOwnHoldAndSeeItGetPaid() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-5").andExpect(status().isCreated())).get("holdId").asText();
+
+        JsonNode open = body(call(HttpMethod.GET, "/holds/" + holdId, fan, null).andExpect(status().isOk()));
+        assertThat(open.get("state").asText()).isEqualTo("OPEN");
+        assertThat(open.get("eventId").asText()).isEqualTo(eventId);
+        assertThat(open.get("quote").get("lines").findValuesAsText("seat")).containsExactly("FLOOR-A-5");
+
+        // someone else's hold looks like no hold at all
+        call(HttpMethod.GET, "/holds/" + holdId, testUsers.bearer(Role.FAN), null).andExpect(status().isNotFound());
+
+        String orderId = body(checkout(fan, holdId, "tok_visa")).get("id").asText();
+        JsonNode paid = body(call(HttpMethod.GET, "/holds/" + holdId, fan, null));
+        assertThat(paid.get("state").asText()).isEqualTo("PAID");
+        assertThat(paid.get("orderId").asText()).isEqualTo(orderId);
+    }
+
+    @Test
+    void aReleasedHoldSaysSo() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-6")).get("holdId").asText();
+        call(HttpMethod.DELETE, "/holds/" + holdId, fan, null).andExpect(status().isNoContent());
+        assertThat(body(call(HttpMethod.GET, "/holds/" + holdId, fan, null)).get("state").asText()).isEqualTo("RELEASED");
+    }
+
+    @Test
+    void theOrganizerSeesLiveSalesForTheirEventOnly() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String sold = body(hold(fan, null, "FLOOR-A-1", "FLOOR-A-2")).get("holdId").asText();
+        checkout(fan, sold, "tok_visa").andExpect(status().isOk());
+        hold(testUsers.bearer(Role.FAN), null, "FLOOR-A-3").andExpect(status().isCreated());
+
+        JsonNode stats = body(call(HttpMethod.GET, "/events/" + eventId + "/stats", organizer, null).andExpect(status().isOk()));
+        assertThat(stats.get("seats").asInt()).isEqualTo(6);
+        assertThat(stats.get("sold").asInt()).isEqualTo(2);
+        assertThat(stats.get("held").asInt()).isEqualTo(1);
+        assertThat(stats.get("free").asInt()).isEqualTo(3);
+        assertThat(stats.get("orders").asLong()).isEqualTo(1);
+        assertThat(stats.get("tickets").asLong()).isEqualTo(2);
+        // 50.00 face, fee 10% + 1.50 = 6.50, tax 8% of 56.50 = 4.52: 61.02 a seat
+        assertThat(stats.get("revenueCents").asLong()).isEqualTo(2 * 6102);
+
+        assertThat(body(call(HttpMethod.GET, "/organizer/events", organizer, null)).findValuesAsText("id")).contains(eventId);
+        String other = testUsers.bearer(Role.ORGANIZER);
+        call(HttpMethod.GET, "/events/" + eventId + "/stats", other, null).andExpect(status().isForbidden());
+        assertThat(body(call(HttpMethod.GET, "/organizer/events", other, null)).findValuesAsText("id")).doesNotContain(eventId);
+    }
+
+    @Test
     void aPromoCodeStopsWorkingOnceItsUsesAreGone() throws Exception {
         call(HttpMethod.POST, "/events/" + eventId + "/promo-codes", organizer, """
                 {"code": "ONCE", "percentOff": 10, "maxUses": 1}""").andExpect(status().isCreated());

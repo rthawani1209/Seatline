@@ -16,19 +16,21 @@ import java.util.Map;
 /**
  * A real seat ledger for the API tests: one node, in this JVM, with its log in a temp folder, and
  * mutual TLS on, so every API test also goes through the same certificate checks as a deployment.
- * One node is enough here; replication is tested in the ledger module.
+ * One node is enough here; replication is tested in the ledger module. Its admin controls are on,
+ * for the chaos panel tests.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestLedger {
 
+    private int peerPort;
+
     @Bean(destroyMethod = "close")
     LedgerServer ledgerServer() throws IOException {
-        int peerPort;
         try (ServerSocket s = new ServerSocket(0)) {
             peerPort = s.getLocalPort();
         }
         return new LedgerServer(new LedgerServer.Config(1, Map.of(1, "127.0.0.1:" + peerPort),
-                Files.createTempDirectory("seatline-ledger"), "127.0.0.1", 0, false, RaftConfig.DEFAULT, cert("ledger-1")));
+                Files.createTempDirectory("seatline-ledger"), "127.0.0.1", 0, true, RaftConfig.DEFAULT, cert("ledger-1")));
     }
 
     // the ledger module's test-only certificates (tests run from the backend/ folder)
@@ -42,6 +44,7 @@ public class TestLedger {
     DynamicPropertyRegistrar ledgerAddress(LedgerServer server) {
         return registry -> {
             registry.add("seatline.ledger", () -> "1=127.0.0.1:" + server.clientPort());
+            registry.add("seatline.ledger-admin", () -> "1=127.0.0.1:" + peerPort);
             registry.add("seatline.ledger-tls.cert", () -> CERTS.resolve("api.crt").toString());
             registry.add("seatline.ledger-tls.key", () -> CERTS.resolve("api.key").toString());
             registry.add("seatline.ledger-tls.ca", () -> CERTS.resolve("ca.crt").toString());

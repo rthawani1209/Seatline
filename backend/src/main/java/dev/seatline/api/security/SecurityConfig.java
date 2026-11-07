@@ -55,12 +55,17 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/me").authenticated()
                         .requestMatchers(HttpMethod.POST, "/me/2fa/setup", "/me/2fa/enable", "/me/2fa/disable").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/admin/users/*/role").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/admin/ledger").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/admin/ledger/*/crash", "/admin/ledger/*/revive",
+                                "/admin/ledger/*/cut-off", "/admin/ledger/heal").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/venues/*", "/events", "/events/*", "/events/*/seats", "/events/*/best-seats").permitAll()
                         .requestMatchers(HttpMethod.POST, "/venues", "/events").hasAnyRole("ORGANIZER", "ADMIN")
                         // ownership of the event is checked in EventService
                         .requestMatchers(HttpMethod.POST, "/events/*/publish", "/events/*/promo-codes").hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/organizer/events", "/events/*/stats").hasAnyRole("ORGANIZER", "ADMIN")
                         .requestMatchers(HttpMethod.POST, "/events/*/quote", "/events/*/holds", "/holds/*/checkout",
                                 "/tickets/*/transfer", "/tickets/*/return").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/holds/*").authenticated()
                         .requestMatchers(HttpMethod.DELETE, "/holds/*").authenticated()
                         .requestMatchers("/events/*/queue").authenticated()
                         .requestMatchers(HttpMethod.GET, "/me/tickets", "/me/tickets/*/qr").authenticated()

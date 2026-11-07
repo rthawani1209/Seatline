@@ -19,14 +19,16 @@ import javax.net.ssl.SSLSession;
 import java.nio.file.Path;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
+import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 /**
  * Mutual TLS for the ledger. Every node and the API have a certificate from the cluster's private
  * certificate authority (see scripts/certs.sh), and both sides of every connection show theirs.
- * On top of "signed by our CA", each port checks who is calling: the peer port only talks to
- * {@code ledger-N} certificates, the client port only to {@code api}. So a stranger can't connect
- * at all, and the API's certificate can't be used to pretend to be a Raft leader.
+ * On top of "signed by our CA", each port checks who is calling: Raft on the peer port only talks
+ * to {@code ledger-N} certificates, the client port only to {@code api}, and the admin controls
+ * (when switched on) take either, because the API's chaos panel drives them. So a stranger can't
+ * connect at all, and the API's certificate can't be used to pretend to be a Raft leader.
  *
  * @param cert this side's certificate chain (PEM)
  * @param key its private key (PKCS#8 PEM)
@@ -62,12 +64,20 @@ public record Tls(Path cert, Path key, Path ca) {
 
     /** Refuses calls whose client certificate's name doesn't pass {@code allowed}. */
     static ServerInterceptor only(Predicate<String> allowed) {
+        return only((service, name) -> allowed.test(name));
+    }
+
+    /**
+     * Refuses calls unless {@code allowed} passes for the called gRPC service and the client
+     * certificate's name, for a port that serves different callers per service.
+     */
+    static ServerInterceptor only(BiPredicate<String, String> allowed) {
         return new ServerInterceptor() {
             @Override
             public <Q, R> ServerCall.Listener<Q> interceptCall(ServerCall<Q, R> call, Metadata headers,
                                                                ServerCallHandler<Q, R> next) {
                 String name = callerName(call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION));
-                if (!allowed.test(name)) {
+                if (!allowed.test(call.getMethodDescriptor().getServiceName(), name)) {
                     call.close(Status.PERMISSION_DENIED.withDescription("certificate not allowed here"), new Metadata());
                     return new ServerCall.Listener<>() { };
                 }

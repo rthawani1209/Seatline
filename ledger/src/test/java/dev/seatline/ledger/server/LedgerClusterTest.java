@@ -29,7 +29,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -246,8 +245,6 @@ class LedgerClusterTest {
     }
 
     static int freePort() throws IOException {
-        try (ServerSocket s = new ServerSocket(0)) {
-            return s.getLocalPort();
-        }
+        return TestPorts.free();
     }
 }

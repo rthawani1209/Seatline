@@ -5,7 +5,8 @@
 #   scripts/certs.sh <out dir> [nodes=5] [days=825] [extra DNS names for every cert...]
 #
 # The test certificates in ledger/src/test/resources/tls were made with this script; they're for
-# tests only and must never be used in a deployment.
+# tests only and must never be used in a deployment. They also include "visitor", signed by the same
+# CA but named neither api nor ledger-N, for testing the name checks.
 set -euo pipefail
 
 out=${1:?usage: certs.sh <out dir> [nodes] [days] [extra names...]}

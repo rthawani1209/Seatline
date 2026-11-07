@@ -32,6 +32,11 @@ seatline:
   # client ports of the seat ledger nodes
   ledger: ${SEATLINE_LEDGER:1=localhost:8001,2=localhost:8002,3=localhost:8003}
   ledger-timeout: 5s
+  # the nodes' admin addresses (peer ports, nodes started with --admin) for the chaos panel;
+  # leave unset to turn the panel off
+  ledger-admin: ${SEATLINE_LEDGER_ADMIN:}
+  # the web app, for links in emails
+  public-url: ${SEATLINE_PUBLIC_URL:http://localhost:3000}
   # mutual TLS with the ledger; set all three in a deployment (files from scripts/certs.sh)
   # ledger-tls:
   #   cert: ${SEATLINE_LEDGER_TLS_CERT}

@@ -1,5 +1,6 @@
 package dev.seatline.api.account;
 
+import dev.seatline.api.security.SeatlineSettings;
 import dev.seatline.api.security.TokenService;
 import dev.seatline.api.web.ApiException;
 import org.springframework.http.HttpStatus;
@@ -33,11 +34,12 @@ public class AccountService {
     private final Mailer mailer;
     private final JdbcTemplate jdbc;
     private final Clock clock;
+    private final String publicUrl;
     // hashed once at startup so a login for an unknown email costs as much as a real one
     private final String dummyHash;
 
     public AccountService(UserRepository users, PasswordEncoder passwords, TokenService tokens, LoginLimiter limiter,
-                          Mailer mailer, JdbcTemplate jdbc, Clock clock) {
+                          Mailer mailer, JdbcTemplate jdbc, Clock clock, SeatlineSettings settings) {
         this.users = users;
         this.passwords = passwords;
         this.tokens = tokens;
@@ -45,6 +47,7 @@ public class AccountService {
         this.mailer = mailer;
         this.jdbc = jdbc;
         this.clock = clock;
+        this.publicUrl = settings.publicUrl() == null ? "http://localhost:3000" : settings.publicUrl().replaceAll("/+$", "");
         this.dummyHash = passwords.encode("not a real password");
     }
 
@@ -61,7 +64,9 @@ public class AccountService {
         jdbc.update("insert into email_verifications (token_hash, user_id, expires_at) values (?, ?, ?)",
                 sha256(token), user.id(), Timestamp.from(clock.instant().plus(VERIFY_TTL)));
         mailer.send(normalized, "Confirm your Seatline email",
-                "Your confirmation code: " + token + "\nIt works for 24 hours.");
+                "Your confirmation code: " + token + "\n"
+                        + "Or open " + publicUrl + "/verify?token=" + token + "\n"
+                        + "It works for 24 hours.");
         return user;
     }
 

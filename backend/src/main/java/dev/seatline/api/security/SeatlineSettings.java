@@ -13,7 +13,10 @@ import java.time.Duration;
  *     the API gives up and answers 503
  * @param ledgerTls the API's certificate for mutual TLS with the ledger (cert, key, ca), or unset
  *     for plain text on a local machine
+ * @param ledgerAdmin the nodes' admin addresses (their peer ports), {@code 1=host:port,...}, for
+ *     the chaos panel; unset turns the panel off
+ * @param publicUrl where the web app lives, for links in emails
  */
 @ConfigurationProperties("seatline")
 public record SeatlineSettings(String jwtSecret, Duration tokenTtl, String ledger, Duration ledgerTimeout,
-                               Tls ledgerTls) {}
+                               Tls ledgerTls, String ledgerAdmin, String publicUrl) {}

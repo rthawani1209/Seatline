@@ -59,6 +59,14 @@ public class OrderService {
 
     public record Order(UUID id, UUID eventId, long totalCents, List<TicketView> tickets) {}
 
+    /**
+     * A fan's hold, for the checkout page after a reload.
+     *
+     * @param state OPEN (can still be paid), PAID, RELEASED (let go) or EXPIRED
+     */
+    public record HoldView(String holdId, UUID eventId, Instant expiresAt, EventService.Quote quote, String state,
+                           UUID orderId) {}
+
     private final JdbcClient db;
     private final TransactionTemplate tx;
     private final EventService events;
@@ -130,6 +138,25 @@ public class OrderService {
                         Timestamp.from(expires))
                 .update();
         return new Hold(holdId, expires, quote);
+    }
+
+    public HoldView holdView(String holdId, CurrentUser fan) {
+        record Row(UUID eventId, String quote, Instant expires, boolean released, boolean expired) {}
+        Row r = db.sql("""
+                select event_id, quote, expires_at, released_at is not null, expires_at <= now()
+                from holds where id = ? and fan_id = ?""")
+                .params(holdId, fan.id())
+                .query((rs, n) -> new Row(rs.getObject(1, UUID.class), rs.getString(2),
+                        rs.getTimestamp(3).toInstant(), rs.getBoolean(4), rs.getBoolean(5)))
+                .optional()
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_hold"));
+        UUID orderId = db.sql("select id from orders where hold_id = ?").param(holdId).query(UUID.class)
+                .optional().orElse(null);
+        String state = orderId != null ? "PAID"
+                : r.released() ? "RELEASED"
+                : r.expired() ? "EXPIRED"
+                : "OPEN";
+        return new HoldView(holdId, r.eventId(), r.expires(), read(r.quote()), state, orderId);
     }
 
     public void release(String holdId, CurrentUser fan) {

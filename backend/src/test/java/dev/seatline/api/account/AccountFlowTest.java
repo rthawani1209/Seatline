@@ -90,6 +90,9 @@ class AccountFlowTest {
         login(email, PASSWORD, null).andExpect(status().isForbidden()).andExpect(jsonPath("$.error").value("email_not_verified"));
 
         String token = verificationToken(email);
+        // the email also links straight to the web app's verify page
+        assertThat(jdbc.queryForObject("select body from outbox_emails where to_address = ? order by id desc limit 1",
+                String.class, email)).contains("http://localhost:3000/verify?token=" + token);
         postJson("/auth/verify", "{\"token\": \"" + token + "\"}").andExpect(status().isNoContent());
         postJson("/auth/verify", "{\"token\": \"" + token + "\"}").andExpect(status().isBadRequest());
     }

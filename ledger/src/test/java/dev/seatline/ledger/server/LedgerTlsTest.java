@@ -2,6 +2,7 @@ package dev.seatline.ledger.server;
 
 import dev.seatline.ledger.client.LedgerClient;
 import dev.seatline.ledger.raft.RaftConfig;
+import dev.seatline.ledger.rpc.AdminGrpc;
 import dev.seatline.ledger.rpc.LedgerGrpc;
 import dev.seatline.ledger.rpc.RaftGrpc;
 import dev.seatline.ledger.rpc.RaftMessage;
@@ -20,7 +21,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -64,7 +64,7 @@ class LedgerTlsTest {
         for (int id = 1; id <= 3; id++) {
             String c = clients.get(id);
             servers.add(new LedgerServer(new LedgerServer.Config(id, cluster, dir.resolve("n" + id), "127.0.0.1",
-                    Integer.parseInt(c.substring(c.lastIndexOf(':') + 1)), false, RaftConfig.DEFAULT, cert("ledger-" + id))));
+                    Integer.parseInt(c.substring(c.lastIndexOf(':') + 1)), true, RaftConfig.DEFAULT, cert("ledger-" + id))));
         }
     }
 
@@ -116,6 +116,22 @@ class LedgerTlsTest {
     }
 
     @Test
+    void theApisCertificateCanUseTheAdminControlsButNoOneElseCan() {
+        // the chaos panel goes through the API, so the API may call Admin on the peer port
+        ManagedChannel api = track(NettyChannelBuilder.forTarget(cluster.get(1)).sslContext(cert("api").client()).build());
+        assertThat(AdminGrpc.newBlockingStub(api).withDeadlineAfter(5, TimeUnit.SECONDS)
+                .getStatus(dev.seatline.ledger.rpc.Empty.getDefaultInstance()).getId()).isEqualTo(1);
+
+        // signed by our CA but named neither api nor ledger-N
+        ManagedChannel other = track(NettyChannelBuilder.forTarget(cluster.get(1)).sslContext(cert("visitor").client()).build());
+        assertThatThrownBy(() -> AdminGrpc.newBlockingStub(other).withDeadlineAfter(5, TimeUnit.SECONDS)
+                .crash(dev.seatline.ledger.rpc.Empty.getDefaultInstance()))
+                .isInstanceOfSatisfying(StatusRuntimeException.class,
+                        e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED));
+        assertThat(servers.getFirst().status().getUp()).isTrue();
+    }
+
+    @Test
     void aNodesCertificateCantUseTheClientPort() {
         ManagedChannel ch = track(NettyChannelBuilder.forTarget(clients.get(1)).sslContext(cert("ledger-2").client()).build());
         assertThatThrownBy(() -> LedgerGrpc.newBlockingStub(ch).withDeadlineAfter(5, TimeUnit.SECONDS)
@@ -130,8 +146,6 @@ class LedgerTlsTest {
     }
 
     static int freePort() throws IOException {
-        try (ServerSocket s = new ServerSocket(0)) {
-            return s.getLocalPort();
-        }
+        return TestPorts.free();
     }
 }
