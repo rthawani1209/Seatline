@@ -195,6 +195,13 @@ export default function EventPage() {
         </div>
       </header>
 
+      {event.status === "CANCELLED" ? (
+        <div className="wrap" style={{ paddingBottom: 60 }}>
+          <div className="alert" role="status">
+            This event has been cancelled. Everyone who bought tickets has been refunded in full, fees included.
+          </div>
+        </div>
+      ) : (
       <div className={`wrap ${s.layout}`}>
         <section className={s.mapCol} aria-label="Seats">
           {draft && <div className="notice">This event is a draft. Publish it to put seats on sale.</div>}
@@ -375,6 +382,7 @@ export default function EventPage() {
           </div>
         </aside>
       </div>
+      )}
     </div>
   );
 }

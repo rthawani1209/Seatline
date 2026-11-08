@@ -6,6 +6,7 @@ import s from "./SeatMap.module.css";
 
 const UNIT = 22; // px per seat at 100%
 const SEAT = 16;
+const MIN_TAP = 24; // px, the smallest seat on a touch screen
 const STAGE_H = 46;
 
 export type SeatLook = "free" | "held" | "sold" | "off";
@@ -42,8 +43,13 @@ export const SeatMap = memo(function SeatMap(props: Props) {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // on a phone the whole venue would be too small to tap, so start larger and let it scroll
-    const measure = () => setFit(Math.min(1.6, Math.max(0.7, (el.clientWidth - 28) / layout.width)));
+    // on a touch screen a seat is never drawn smaller than a fingertip (24px); a big venue starts
+    // larger than the box and scrolls instead
+    const measure = () => {
+      const touch = window.matchMedia("(pointer: coarse)").matches || el.clientWidth < 600;
+      const smallest = touch ? MIN_TAP / SEAT : 0.7;
+      setFit(Math.min(Math.max(1.6, smallest), Math.max(smallest, (el.clientWidth - 28) / layout.width)));
+    };
     measure();
     // start looking at the middle of the stage when the venue is wider than the box
     requestAnimationFrame(() => (el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2));

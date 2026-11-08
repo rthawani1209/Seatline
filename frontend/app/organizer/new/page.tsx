@@ -22,16 +22,19 @@ export default function NewEventPage() {
   );
 }
 
-/** "1, 2, 7-9" to [1, 2, 7, 8, 9], ignoring anything outside 1..max. */
+/** "1, 2, 7-9" to [1, 2, 7, 8, 9], ignoring anything outside 1..max. "9-7" means 7-9. */
 function numbers(text: string, max: number): number[] {
   const out = new Set<number>();
   for (const part of text.split(",")) {
-    const [a, b] = part.split("-").map((x) => parseInt(x.trim(), 10));
-    if (Number.isNaN(a)) continue;
-    for (let n = a; n <= (Number.isNaN(b) ? a : b); n++) if (n >= 1 && n <= max) out.add(n);
+    const [a, b = a] = part.split("-").map((x) => parseInt(x.trim(), 10));
+    if (Number.isNaN(a) || Number.isNaN(b)) continue;
+    for (let n = Math.min(a, b); n <= Math.max(a, b); n++) if (n >= 1 && n <= max) out.add(n);
   }
   return [...out].sort((x, y) => x - y);
 }
+
+/** A whole number for a count field, or 0 while the field is empty (the form's required check catches that). */
+const count = (v: string, max: number) => Math.min(max, Math.max(0, Math.floor(Number(v)) || 0));
 
 function localInput(d: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -194,8 +197,8 @@ function NewEvent() {
                       min={1}
                       max={60}
                       required
-                      value={x.rows}
-                      onChange={(e) => setSection(i, { rows: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })}
+                      value={x.rows || ""}
+                      onChange={(e) => setSection(i, { rows: count(e.target.value, 60) })}
                     />
                   </label>
                   <label className="field">
@@ -206,8 +209,8 @@ function NewEvent() {
                       min={1}
                       max={80}
                       required
-                      value={x.seats}
-                      onChange={(e) => setSection(i, { seats: Math.max(1, Math.min(80, Number(e.target.value) || 1)) })}
+                      value={x.seats || ""}
+                      onChange={(e) => setSection(i, { seats: count(e.target.value, 80) })}
                     />
                   </label>
                   <label className="field">
@@ -267,7 +270,7 @@ function NewEvent() {
         <div className={s.four}>
           <label className="field">
             Tickets per fan
-            <input className="input mono" type="number" min={1} max={20} required value={perFan} onChange={(e) => setPerFan(Number(e.target.value))} />
+            <input className="input mono" type="number" min={1} max={20} required value={perFan || ""} onChange={(e) => setPerFan(count(e.target.value, 20))} />
           </label>
           <label className="field">
             Fee %
@@ -292,7 +295,7 @@ function NewEvent() {
         {queue && (
           <label className="field" style={{ maxWidth: 240 }}>
             Fans let in per minute
-            <input className="input mono" type="number" min={1} max={100000} required value={perMinute} onChange={(e) => setPerMinute(Number(e.target.value))} />
+            <input className="input mono" type="number" min={1} max={100000} required value={perMinute || ""} onChange={(e) => setPerMinute(count(e.target.value, 100000))} />
           </label>
         )}
       </section>

@@ -37,18 +37,22 @@ export default function CheckoutPage() {
       router.replace(`/login?next=${encodeURIComponent(`/checkout/${holdId}`)}`);
       return;
     }
+    // show the copy from this tab straight away, then ask the API where the hold really stands
+    // (it may have been paid, let go or run out in another tab)
     const saved = loadHold(holdId);
-    if (saved) {
-      setHold(saved);
-      return;
-    }
+    if (saved) setHold(saved);
     api<SavedHold>(`/holds/${holdId}`)
-      .then(setHold)
-      .catch(() => setMissing(true));
+      .then((h) => {
+        setHold(h);
+        if (h.state !== "OPEN") forgetHold(holdId);
+      })
+      .catch((e) => {
+        if (!saved || (e instanceof ApiError && e.status === 404)) setMissing(true);
+      });
   }, [holdId, me, ready, router]);
 
   const left = useCountdown(hold?.expiresAt);
-  const expired = !order && left === 0;
+  const expired = !order && (left === 0 || hold?.state === "EXPIRED");
 
   async function pay() {
     setBusy("pay");
@@ -58,7 +62,10 @@ export default function CheckoutPage() {
       forgetHold(holdId);
       setOrder(o);
     } catch (e) {
-      if (e instanceof ApiError && (e.code === "hold_expired" || e.code === "no_such_hold")) setEnded(true);
+      if (e instanceof ApiError && (e.code === "hold_expired" || e.code === "no_such_hold")) {
+        setEnded(true);
+        forgetHold(holdId);
+      }
       setError(explain(e));
     } finally {
       setBusy(null);
@@ -96,6 +103,39 @@ export default function CheckoutPage() {
     return (
       <div className={s.shell} aria-busy="true">
         <p className="hint">Loading your hold…</p>
+      </div>
+    );
+  }
+
+  if (hold.state === "PAID" && !order) {
+    return (
+      <div className={s.shell}>
+        <div className={`panel ${s.card}`} style={{ padding: 24 }}>
+          <p className="eyebrow">Order {hold.orderId?.slice(0, 8).toUpperCase()}</p>
+          <h1 className="display" style={{ fontSize: 40, margin: "0 0 8px" }}>
+            Already paid
+          </h1>
+          <p>These seats are yours. Your tickets are waiting in My tickets.</p>
+          <Link href="/tickets" className="btn btn-primary">
+            See my tickets
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (hold.state === "RELEASED") {
+    return (
+      <div className={s.shell}>
+        <div className={`panel ${s.card}`} style={{ padding: 24 }}>
+          <h1 className="display" style={{ fontSize: 40, margin: "0 0 8px" }}>
+            Seats let go
+          </h1>
+          <p>You let these seats go, so they&apos;re back on sale. Nothing was charged.</p>
+          <Link href={`/events/${hold.eventId}`} className="btn btn-primary">
+            Pick seats again
+          </Link>
+        </div>
       </div>
     );
   }
@@ -211,7 +251,7 @@ export default function CheckoutPage() {
           <h2 id="pay-with" className="eyebrow" style={{ margin: 0 }}>
             Pay with
           </h2>
-          <div className={s.testMode}>Test mode: no real card is charged.</div>
+          <div className={s.testMode}>Test cards only: no real card is charged.</div>
           <div className={s.cards} role="radiogroup" aria-label="Card">
             {CARDS.map((c) => (
               <label key={c.token} className={s.cardOpt} data-on={card === c.token}>

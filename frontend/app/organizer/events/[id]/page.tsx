@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Dialog } from "@/components/Dialog";
 import { RoleGate } from "@/components/RoleGate";
 import { api, ApiError, explain } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -43,6 +44,23 @@ function Live() {
     last.current = { sold: stats.sold, at: now };
   }, [stats]);
 
+  const [confirmCancel, setConfirmCancel] = useState(false);
+
+  async function cancelEvent() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/events/${id}/cancel`, { method: "POST" });
+      setConfirmCancel(false);
+      reload();
+    } catch (e) {
+      setError(explain(e));
+      setConfirmCancel(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function publish() {
     setBusy(true);
     setError(null);
@@ -74,6 +92,8 @@ function Live() {
   }
 
   const draft = event.status === "DRAFT";
+  const cancelled = event.status === "CANCELLED";
+  const started = Date.parse(event.startsAt) <= Date.now();
   const peak = Math.max(1, ...rates);
   const doubleSold = stats ? Math.max(0, stats.tickets - stats.sold) : 0;
 
@@ -86,7 +106,7 @@ function Live() {
           </Link>
           <h1 className={`display ${s.title}`}>{event.name}</h1>
           <p className="hint" style={{ margin: 0 }}>
-            {when(event.startsAt, { year: "numeric" })} · {draft ? "Draft" : "On sale"}
+            {when(event.startsAt, { year: "numeric" })} · {draft ? "Draft" : cancelled ? "Cancelled" : "On sale"}
             {event.queuePerMinute ? ` · waiting room at ${event.queuePerMinute}/min` : ""}
           </p>
         </div>
@@ -99,8 +119,34 @@ function Live() {
           <Link href={`/events/${id}`} className="btn">
             Fan page
           </Link>
+          {!cancelled && !started && (
+            <button type="button" className="btn" onClick={() => setConfirmCancel(true)} disabled={busy}>
+              Cancel event
+            </button>
+          )}
         </div>
       </div>
+
+      {cancelled && (
+        <div className="notice" role="status">
+          This event is cancelled. Every order has been refunded in full and ticket holders have been emailed.
+        </div>
+      )}
+
+      <Dialog open={confirmCancel} title="Cancel this event?" onClose={() => setConfirmCancel(false)}>
+        <p style={{ marginTop: 0 }}>
+          {event.name} comes off sale straight away. Every ticket stops working at the door, every order is refunded in
+          full (fees included), and ticket holders get an email. This can&apos;t be undone.
+        </p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-primary" onClick={cancelEvent} disabled={busy}>
+            {busy ? "Cancelling…" : "Cancel event and refund everyone"}
+          </button>
+          <button type="button" className="btn" onClick={() => setConfirmCancel(false)} disabled={busy}>
+            Keep it on sale
+          </button>
+        </div>
+      </Dialog>
 
       {(error || statsError != null) && (
         <div className="alert" role="alert">
@@ -143,7 +189,8 @@ function Live() {
         </div>
       </section>
 
-      {!draft && <PromoCodes eventId={id} />}
+      {!draft && !cancelled && <PromoCodes eventId={id} />}
+      {!draft && !cancelled && <DoorTeam eventId={id} />}
 
       {me?.role === "ADMIN" && <ChaosPanel />}
     </div>
@@ -162,11 +209,13 @@ function Tile({ label, value, sub, big }: { label: string; value: string; sub?: 
   );
 }
 
+type Promo = { code: string; percentOff: number; maxUses: number; used: number; expiresAt: string | null };
+
 function PromoCodes({ eventId }: { eventId: string }) {
+  const { data: promos, reload } = useApi<Promo[]>(`/events/${eventId}/promo-codes`);
   const [code, setCode] = useState("");
   const [pct, setPct] = useState(10);
   const [uses, setUses] = useState(100);
-  const [added, setAdded] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -176,8 +225,8 @@ function PromoCodes({ eventId }: { eventId: string }) {
     setError(null);
     try {
       await api(`/events/${eventId}/promo-codes`, { body: { code, percentOff: pct, maxUses: uses } });
-      setAdded((a) => [`${code}: ${pct}% off, ${uses} uses`, ...a]);
       setCode("");
+      reload();
     } catch (err) {
       setError(explain(err));
     } finally {
@@ -204,11 +253,11 @@ function PromoCodes({ eventId }: { eventId: string }) {
         </label>
         <label className="field">
           % off
-          <input className="input mono" type="number" min={1} max={100} required value={pct} onChange={(e) => setPct(Number(e.target.value))} />
+          <input className="input mono" type="number" min={1} max={100} required value={pct || ""} onChange={(e) => setPct(Math.min(100, Math.max(0, Math.floor(Number(e.target.value)) || 0)))} />
         </label>
         <label className="field">
           Uses
-          <input className="input mono" type="number" min={1} required value={uses} onChange={(e) => setUses(Number(e.target.value))} />
+          <input className="input mono" type="number" min={1} max={1000000} required value={uses || ""} onChange={(e) => setUses(Math.min(1_000_000, Math.max(0, Math.floor(Number(e.target.value)) || 0)))} />
         </label>
         <button type="submit" className="btn btn-solid" disabled={busy}>
           {busy ? "Adding…" : "Add code"}
@@ -219,11 +268,87 @@ function PromoCodes({ eventId }: { eventId: string }) {
           {error}
         </div>
       )}
-      {added.length > 0 && (
-        <ul className={s.added}>
-          {added.map((a) => (
-            <li key={a} className="mono">
-              {a}
+      {promos && promos.length > 0 && (
+        <ul className={s.added} aria-label="Promo codes for this event">
+          {promos.map((p) => (
+            <li key={p.code} className="mono">
+              {p.code}: {p.percentOff}% off, {p.used} of {p.maxUses} used
+              {p.expiresAt ? `, ends ${when(p.expiresAt)}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+type StaffMember = { id: string; email: string; displayName: string | null };
+
+/** Who can scan tickets at this event. They need a door staff account first. */
+function DoorTeam({ eventId }: { eventId: string }) {
+  const { data: team, reload } = useApi<StaffMember[]>(`/events/${eventId}/door-staff`);
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/events/${eventId}/door-staff`, { body: { email: email.trim() } });
+      setEmail("");
+      reload();
+    } catch (err) {
+      setError(explain(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(m: StaffMember) {
+    setError(null);
+    try {
+      await api(`/events/${eventId}/door-staff/${m.id}`, { method: "DELETE" });
+      reload();
+    } catch (err) {
+      setError(explain(err));
+    }
+  }
+
+  return (
+    <section className={`panel ${s.promo}`} aria-labelledby="door-h">
+      <h2 id="door-h" className={s.h2}>
+        Door team
+      </h2>
+      <p className="hint" style={{ margin: 0 }}>
+        Only people on this list can scan tickets for this event.
+      </p>
+      <form className={s.doorForm} onSubmit={add}>
+        <label className="field">
+          Door staff email
+          <input className="input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <button type="submit" className="btn btn-solid" disabled={busy}>
+          {busy ? "Adding…" : "Add to door team"}
+        </button>
+      </form>
+      {error && (
+        <div className="alert" role="alert">
+          {error}
+        </div>
+      )}
+      {team && team.length > 0 && (
+        <ul className={s.team} aria-label="Door team">
+          {team.map((m) => (
+            <li key={m.id}>
+              <span>
+                {m.displayName || m.email}
+                {m.displayName && <small className="hint"> {m.email}</small>}
+              </span>
+              <button type="button" className="btn btn-sm" onClick={() => remove(m)} aria-label={`Remove ${m.email} from the door team`}>
+                Remove
+              </button>
             </li>
           ))}
         </ul>

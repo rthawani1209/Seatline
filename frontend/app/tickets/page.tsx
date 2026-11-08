@@ -117,7 +117,7 @@ export default function TicketsPage() {
             </div>
             <TicketQr ticketId={t.id} />
             <div className={s.holder}>
-              {me.displayName} · #{t.id.split("-")[1]?.slice(1, 9).toUpperCase()}
+              {me.displayName} · #{ticketNumber(t.id)}
             </div>
           </article>
 
@@ -263,4 +263,11 @@ function useEvents(tickets: Ticket[] | null) {
     };
   }, [ids]);
   return events;
+}
+
+/** A short number for the stub. Ticket ids start with the hold id, which two tickets can share. */
+function ticketNumber(id: string): string {
+  let h = 2166136261; // FNV-1a
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  return (h >>> 0).toString(36).toUpperCase().padStart(7, "0");
 }

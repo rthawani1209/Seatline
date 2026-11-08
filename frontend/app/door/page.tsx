@@ -4,18 +4,20 @@ import jsQR from "jsqr";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RoleGate } from "@/components/RoleGate";
 import { api, explain } from "@/lib/api";
-import { seatParts } from "@/lib/format";
+import { useAuth } from "@/lib/auth";
+import { seatParts, when } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
-import type { SeatlineEvent } from "@/lib/types";
 import s from "./door.module.css";
 
-type Result = "OK" | "ALREADY_SCANNED" | "WRONG_EVENT" | "OLD_CODE" | "EXPIRED" | "INVALID";
+type Result = "OK" | "ALREADY_SCANNED" | "WRONG_EVENT" | "OLD_CODE" | "EXPIRED" | "CANCELLED" | "INVALID";
+type DoorEvent = { id: string; name: string; startsAt: string };
 type Scan = { result: Result; seat: string | null; tier: string | null; eventName: string | null; scannedAt: string | null };
 
 const WORDS: Record<Result, { head: string; tone: "go" | "stop" | "warn"; say: string }> = {
   OK: { head: "Let in", tone: "go", say: "Valid ticket." },
   ALREADY_SCANNED: { head: "Already used", tone: "stop", say: "This ticket was scanned before." },
   WRONG_EVENT: { head: "Wrong show", tone: "stop", say: "This ticket is for a different event." },
+  CANCELLED: { head: "Event cancelled", tone: "stop", say: "This event was cancelled and the ticket refunded." },
   OLD_CODE: { head: "Old code", tone: "stop", say: "This ticket was sent to someone else. Their phone has the live code." },
   EXPIRED: { head: "Screenshot?", tone: "warn", say: "The code is too old. Ask them to open their ticket in the app." },
   INVALID: { head: "Not a ticket", tone: "stop", say: "Not a Seatline ticket, or it was returned." },
@@ -30,7 +32,9 @@ export default function DoorPage() {
 }
 
 function Door() {
-  const { data: events } = useApi<SeatlineEvent[]>("/events");
+  const { me } = useAuth();
+  // only the events this person is on the door team for (an admin sees every event)
+  const { data: events, loading } = useApi<DoorEvent[]>("/door/events");
   const [eventId, setEventId] = useState("");
   const [scan, setScan] = useState<Scan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +60,8 @@ function Door() {
       lastCode.current = { code, at: now };
       setError(null);
       try {
-        const r = await api<Scan>("/scan", { body: { code, eventId: eventId || undefined } });
+        if (!eventId) return;
+        const r = await api<Scan>("/scan", { body: { code, eventId } });
         setScan(r);
         if (r.result === "OK") setCount((c) => c + 1);
         navigator.vibrate?.(r.result === "OK" ? 80 : [60, 60, 60]);
@@ -132,17 +137,23 @@ function Door() {
         </span>
       </div>
 
-      <label className="field">
-        Scanning for
-        <select className="input" value={eventId} onChange={(e) => setEventId(e.target.value)}>
-          {(events ?? []).map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name}
-            </option>
-          ))}
-          <option value="">Any event</option>
-        </select>
-      </label>
+      {events && events.length === 0 ? (
+        <div className="notice" role="status">
+          You&apos;re not on the door team for any event yet. Ask the organizer to add {me?.email ?? "your email"} on their
+          event page.
+        </div>
+      ) : (
+        <label className="field">
+          Scanning for
+          <select className="input" value={eventId} onChange={(e) => setEventId(e.target.value)} disabled={loading && !events}>
+            {(events ?? []).map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name} · {when(e.startsAt)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <div className={s.viewport} data-tone={words?.tone ?? "idle"}>
         <video ref={videoRef} className={s.video} playsInline muted aria-hidden="true" data-on={camera === "on"} />

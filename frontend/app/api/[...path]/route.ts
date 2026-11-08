@@ -16,8 +16,11 @@ async function forward(req: NextRequest, ctx: { params: Promise<{ path: string[]
     const v = req.headers.get(h);
     if (v) headers.set(h, v);
   }
-  // login rate limits are per client address
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  // Login limits are per client address. Only the last X-Forwarded-For entry is trusted: it was
+  // added by the TLS proxy in front of this app (which records the real socket address), while
+  // anything before it came from the client and can say whatever it likes. With no proxy in front
+  // (local development) nothing is passed and the API sees this server's own address.
+  const ip = req.headers.get("x-forwarded-for")?.split(",").pop()?.trim();
   if (ip) headers.set("x-forwarded-for", ip);
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";

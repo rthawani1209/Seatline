@@ -18,6 +18,8 @@ export function Header() {
   if (me) links.push({ href: "/tickets", label: "My tickets" });
   if (me && (me.role === "ORGANIZER" || me.role === "ADMIN")) links.push({ href: "/organizer", label: "Organizer" });
   if (me && (me.role === "DOOR_STAFF" || me.role === "ADMIN")) links.push({ href: "/door", label: "Door" });
+  if (me?.role === "ADMIN") links.push({ href: "/admin", label: "Admin" });
+  if (me) links.push({ href: "/account", label: "Account" });
 
   const current = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
 

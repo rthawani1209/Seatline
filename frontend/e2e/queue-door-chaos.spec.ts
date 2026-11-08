@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { account, auth, buy, onSaleEvent, signIn, tierId } from "./helpers";
+import { account, addToDoorTeam, auth, buy, onSaleEvent, signIn, tierId } from "./helpers";
 
 test("a big sale goes through the waiting room before seats can be held", async ({ page, request }) => {
   const { id } = await onSaleEvent(request, { queuePerMinute: 600 });
@@ -29,13 +29,15 @@ test("a big sale goes through the waiting room before seats can be held", async 
 });
 
 test("door staff let a ticket in once, and turn away junk", async ({ page, request }) => {
-  const { id, event } = await onSaleEvent(request);
+  const ev = await onSaleEvent(request);
+  const { id, event } = ev;
   const fan = await account(request);
   const side = event.tiers.find((t: { name: string }) => t.name === "Side").id;
   const [ticket] = await buy(request, fan.token, id, side, ["LEFT-C-3"]);
   const code = (await (await request.get(`/api/me/tickets/${ticket}/qr`, { headers: auth(fan.token) })).json()).code;
 
   const door = await account(request, "DOOR_STAFF");
+  await addToDoorTeam(request, ev, door.email);
   await signIn(page, door.email);
   await page.getByRole("link", { name: "Door" }).click();
   await page.getByLabel("Scanning for").selectOption(id);
@@ -62,6 +64,7 @@ test("a ticket for another show is turned away at this door", async ({ page, req
   const [ticket] = await buy(request, fan.token, a.id, tierId(a.event, "Side"), ["RIGHT-D-6"]);
   const code = (await (await request.get(`/api/me/tickets/${ticket}/qr`, { headers: auth(fan.token) })).json()).code;
   const door = await account(request, "DOOR_STAFF");
+  await addToDoorTeam(request, b, door.email);
   await signIn(page, door.email);
   await page.goto("/door");
   await page.getByLabel("Scanning for").selectOption(b.id);

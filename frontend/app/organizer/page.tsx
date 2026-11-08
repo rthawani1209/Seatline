@@ -95,7 +95,9 @@ function Dashboard() {
             return (
               <li key={e.id} className={s.row} data-testid="organizer-event">
                 <div>
-                  <span className={`${s.status} ${draft ? "" : s.statusLive}`}>{draft ? "DRAFT" : "ON SALE"}</span>
+                  <span className={`${s.status} ${e.status === "ON_SALE" ? s.statusLive : ""}`}>
+                    {draft ? "DRAFT" : e.status === "CANCELLED" ? "CANCELLED" : "ON SALE"}
+                  </span>
                   <span className={s.meta}>{when(e.startsAt)}</span>
                   <h2 className={`display ${s.name}`}>{e.name}</h2>
                 </div>

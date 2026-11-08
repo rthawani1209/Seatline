@@ -56,6 +56,7 @@ function Login() {
     <AuthCard kicker="ADMIT ONE" title="Sign in">
       <form onSubmit={submit} className={s.form} style={{ padding: 0 }}>
         {params.get("verified") && <div className="notice">Email verified. Sign in to get your tickets.</div>}
+        {params.get("reset") && <div className="notice">Password changed. Sign in with the new one.</div>}
         {error && (
           <div className="alert" role="alert">
             {error}
@@ -96,6 +97,9 @@ function Login() {
         <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        <p className={s.alt}>
+          <Link href="/forgot">Forgot password?</Link>
+        </p>
         <p className={s.alt}>
           New here? <Link href="/register">Create an account</Link>
         </p>

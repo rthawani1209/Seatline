@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { account, auth, buy, onSaleEvent, signIn, tierId } from "./helpers";
+import { account, addToDoorTeam, auth, buy, onSaleEvent, signIn, tierId } from "./helpers";
 
 test("send a ticket to a friend: it moves to their account and the old code stops working", async ({ page, request }) => {
-  const { id, event } = await onSaleEvent(request);
+  const ev = await onSaleEvent(request);
+  const { id, event } = ev;
   const fan = await account(request);
   const friend = await account(request);
   const main = tierId(event, "Main floor");
@@ -27,6 +28,7 @@ test("send a ticket to a friend: it moves to their account and the old code stop
   expect(theirs.map((t: { seat: string }) => t.seat)).toEqual(["MAIN-D-1"]);
 
   const door = await account(request, "DOOR_STAFF");
+  await addToDoorTeam(request, ev, door.email);
   const scan = await request.post("/api/scan", { headers: auth(door.token), data: { code: oldCode, eventId: id } });
   expect((await scan.json()).result).toBe("OLD_CODE");
 });

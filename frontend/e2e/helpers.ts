@@ -122,3 +122,9 @@ export function tierId(event: { tiers: { id: string; name: string }[] }, name: s
 }
 
 export { auth };
+
+/** Puts a door staff account on an event's door team, as its organizer would. */
+export async function addToDoorTeam(request: APIRequestContext, ev: { id: string; organizer: { token: string } }, doorEmail: string) {
+  const r = await request.post(`/api/events/${ev.id}/door-staff`, { headers: auth(ev.organizer.token), data: { email: doorEmail } });
+  expect(r.status(), await r.text()).toBe(201);
+}

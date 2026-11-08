@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { account, auth, buy, signIn } from "./helpers";
+import { account, auth, buy, onSaleEvent, signIn, tierId } from "./helpers";
 
 test("an organizer builds a venue and event, publishes it, and fans can see it", async ({ page, request }) => {
   const org = await account(request, "ORGANIZER");
@@ -47,7 +47,7 @@ test("an organizer builds a venue and event, publishes it, and fans can see it",
   await page.getByLabel("% off").fill("20");
   await page.getByLabel("Uses").fill("50");
   await page.getByRole("button", { name: "Add code" }).click();
-  await expect(page.getByText("ROOF20: 20% off, 50 uses")).toBeVisible();
+  await expect(page.getByText("ROOF20: 20% off, 0 of 50 used")).toBeVisible();
   await page.getByLabel("Code", { exact: true }).fill("roof20");
   await page.getByRole("button", { name: "Add code" }).click();
   await expect(page.locator(".alert")).toHaveText("That promo code already exists.");
@@ -100,4 +100,66 @@ test("fans can't open the organizer pages", async ({ page, request }) => {
   await expect(page.getByRole("heading", { name: "Not for this account" })).toBeVisible();
   await page.goto("/door");
   await expect(page.getByRole("heading", { name: "Not for this account" })).toBeVisible();
+});
+
+test("promo codes stay listed after a reload, and the door team decides who can scan", async ({ page, request }) => {
+  const ev = await onSaleEvent(request);
+  const door = await account(request, "DOOR_STAFF");
+  const fan = await account(request);
+  await signIn(page, ev.organizer.email);
+  await page.goto(`/organizer/events/${ev.id}`);
+
+  await page.getByLabel("Code", { exact: true }).fill("early20");
+  await page.getByLabel("% off").fill("20");
+  await page.getByLabel("Uses").fill("50");
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(page.getByText("EARLY20: 20% off, 0 of 50 used")).toBeVisible();
+
+  // a fan account can't join the door team
+  await page.getByLabel("Door staff email").fill(fan.email);
+  await page.getByRole("button", { name: "Add to door team" }).click();
+  await expect(page.locator(".alert")).toContainText("isn't a door staff account");
+  await page.getByLabel("Door staff email").fill(door.email);
+  await page.getByRole("button", { name: "Add to door team" }).click();
+  await expect(page.getByRole("list", { name: "Door team" })).toContainText(door.email);
+
+  await page.reload();
+  await expect(page.getByText("EARLY20: 20% off, 0 of 50 used")).toBeVisible();
+  await expect(page.getByRole("list", { name: "Door team" })).toContainText(door.email);
+
+  const mine = await (await request.get("/api/door/events", { headers: auth(door.token) })).json();
+  expect(mine.map((e: { id: string }) => e.id)).toEqual([ev.id]);
+
+  await page.getByRole("button", { name: `Remove ${door.email} from the door team` }).click();
+  await expect(page.getByRole("list", { name: "Door team" })).toHaveCount(0);
+  expect(await (await request.get("/api/door/events", { headers: auth(door.token) })).json()).toEqual([]);
+});
+
+test("door staff on no door team are told who to ask", async ({ page, request }) => {
+  const door = await account(request, "DOOR_STAFF");
+  await signIn(page, door.email);
+  await page.goto("/door");
+  await expect(page.getByRole("status")).toContainText("not on the door team for any event");
+  await expect(page.getByLabel("Scanning for")).toHaveCount(0);
+});
+
+test("an organizer cancels an event: fans are refunded and the page says so", async ({ page, request }) => {
+  const ev = await onSaleEvent(request);
+  const fan = await account(request);
+  await buy(request, fan.token, ev.id, tierId(ev.event, "Main floor"), ["MAIN-A-1"]);
+
+  await signIn(page, ev.organizer.email);
+  await page.goto(`/organizer/events/${ev.id}`);
+  await page.getByRole("button", { name: "Cancel event" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Keep it on sale" }).click();
+  await expect(dialog).toBeHidden();
+  await page.getByRole("button", { name: "Cancel event" }).click();
+  await dialog.getByRole("button", { name: "Cancel event and refund everyone" }).click();
+  await expect(page.getByText("This event is cancelled.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel event" })).toHaveCount(0);
+
+  expect(await (await request.get("/api/me/tickets", { headers: auth(fan.token) })).json()).toEqual([]);
+  await page.goto(`/events/${ev.id}`);
+  await expect(page.getByText("This event has been cancelled.")).toBeVisible();
 });

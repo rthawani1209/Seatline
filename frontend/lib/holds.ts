@@ -1,7 +1,12 @@
 import type { Hold } from "./types";
 
-// The hold the API just made, kept for the checkout page in this tab.
-export type SavedHold = Hold & { eventId: string };
+// The hold the API just made, kept for the checkout page in this tab. When it comes from
+// GET /holds/{id} it also says where it stands.
+export type SavedHold = Hold & {
+  eventId: string;
+  state?: "OPEN" | "PAID" | "RELEASED" | "EXPIRED";
+  orderId?: string | null;
+};
 
 const key = (holdId: string) => `seatline.hold.${holdId}`;
 

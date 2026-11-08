@@ -9,9 +9,11 @@ type Auth = {
   ready: boolean;
   signIn: (token: string, expiresAt: string) => Promise<void>;
   signOut: () => void;
+  /** Reload who we are, after something changes the account (say, turning on two-step sign-in). */
+  refresh: () => Promise<void>;
 };
 
-const AuthContext = createContext<Auth>({ me: null, ready: false, signIn: async () => {}, signOut: () => {} });
+const AuthContext = createContext<Auth>({ me: null, ready: false, signIn: async () => {}, signOut: () => {}, refresh: async () => {} });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
@@ -51,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(() => setToken(null), []);
 
-  return <AuthContext.Provider value={{ me, ready, signIn, signOut }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ me, ready, signIn, signOut, refresh: load }}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);
