@@ -13,6 +13,7 @@
   <modules>
     <module>ledger</module>
     <module>backend</module>
+    <module>loadtest</module>
   </modules>
 
   <properties>

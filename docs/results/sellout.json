@@ -1,0 +1,60 @@
+{
+  "date": "2026-11-07T22:56:47Z",
+  "machine": "4 cores, Intel(R) Xeon(R) Processor @ 2.10GHz; the whole stack (5 ledger nodes, API, Postgres, Redis) and Gatling on this one machine",
+  "command": "scripts/loadtest.sh -Dfans=10000 -DrampSeconds=300 -Dapi=http://172.18.0.3:8080",
+  "commit": "c0123b2 plus the rush fixes committed in c423af9 (run before that commit's later QA changes; the purchase path is the same)",
+  "eventId": "21dd6701-74b5-45eb-bcf7-ad1392bae35a",
+  "fans": 10000,
+  "rampSeconds": 300,
+  "seats": 5000,
+  "fansWhoBought": 3356,
+  "seatsBoughtByFans": 5000,
+  "fansWhoFoundItSoldOut": 6628,
+  "fansWhoGaveUpAfterFiveTries": 16,
+  "fansWhosePaymentFailed": 0,
+  "busyAnswers503": 0,
+  "secondsToSellOut": 100.8,
+  "purchasesPerSecond": 33.3,
+  "latencyMs": {
+    "seat map": {
+      "count": 10149,
+      "p50": 2,
+      "p95": 7,
+      "p99": 10,
+      "max": 242
+    },
+    "hold": {
+      "count": 3521,
+      "p50": 7,
+      "p95": 12,
+      "p99": 179,
+      "max": 496
+    },
+    "checkout": {
+      "count": 3356,
+      "p50": 8,
+      "p95": 15,
+      "p99": 227,
+      "max": 599
+    },
+    "purchase": {
+      "count": 3356,
+      "p50": 20,
+      "p95": 37,
+      "p99": 639,
+      "max": 1220
+    }
+  },
+  "tickets": 5000,
+  "seatsWithTwoTickets": 0,
+  "orders": 3356,
+  "ordersWithoutPayment": 0,
+  "paymentsLost": 0,
+  "ledgerSold": 5000,
+  "ledgerHeld": 0,
+  "ledgerFree": 0,
+  "revenueCents": 30510000,
+  "paymentsUnfinishedWhenTheSaleEnded": 0,
+  "ticketsWhenTheSaleEnded": 5000,
+  "secondsForTheBooksToSettle": 0
+}
