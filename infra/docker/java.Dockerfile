@@ -7,7 +7,9 @@ WORKDIR /src
 COPY pom.xml .
 COPY ledger ledger
 COPY backend backend
-RUN mvn -B -q -DskipTests package \
+# the load test isn't part of the images, but Maven wants every module's pom to exist
+COPY loadtest/pom.xml loadtest/pom.xml
+RUN mvn -B -q -DskipTests -pl ledger,backend package \
  && mvn -B -q -pl ledger dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/lib
 
 FROM eclipse-temurin:21-jre AS ledger
