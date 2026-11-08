@@ -92,9 +92,11 @@ The API is what browsers and the door scanner talk to. It owns accounts, events 
 - **Passwords** are hashed with **Argon2id**, a hash designed to be slow and memory-hungry so stolen hashes are expensive to crack. Logging in with an unknown email still runs a hash, so response time doesn't reveal who has an account, and both cases get the same `bad_credentials` answer.
 - **Email verification**: sign-up emails a random code; only its SHA-256 is stored, it works once and expires after 24 hours. Until it's used, login is refused.
 - **Two-factor codes** (optional): the six-digit codes from an authenticator app (TOTP, RFC 6238), written out in [`Totp.java`](../backend/src/main/java/dev/seatline/api/account/Totp.java) and checked against the RFC's own test values. A code is accepted for one 30-second step either side of now, and never twice.
-- **Rate limits**: 5 failed logins per account or 20 per address within 15 minutes, then refused until old failures age out. The counts are kept in memory on each API server, so with several servers the real limit is that many times higher; moving them into Redis next to the waiting room is the fix if that matters. Old entries are swept away so the table can't grow forever. Behind the load balancer the client's real address comes from `X-Forwarded-For`, trusted only when the request arrives from a private-network address (the balancer); otherwise everyone would share the balancer's address and one attacker could lock out every user.
+- **Rate limits**: within 15 minutes, 5 tries for one account from one address, 30 from one address, or 50 at one account from anywhere, then refused until old tries age out. A try is counted *before* the password is checked (and taken back if it succeeds), so a burst of parallel guesses can't all slip in before the first failure is recorded. The counts are kept in memory on each API server, so with several servers the real limit is that many times higher; moving them into Redis next to the waiting room is the fix if that matters. Old entries are swept away so the table can't grow forever. Behind the load balancer the client's real address comes from `X-Forwarded-For`, trusted only when the request arrives from a private-network address (the balancer); otherwise everyone would share the balancer's address and one attacker could lock out every user.
 - **Tokens**: a successful login returns a signed token (JWT, HS256, 1 hour) carrying the user id and role. Clients send it as `Authorization: Bearer ...`. Because it's not a cookie, a malicious site can't make the browser send it, so there's no cross-site request forgery to defend against.
-- **Taking tokens back**: each token carries the user's *token version*. Changing someone's role or turning off their two-factor bumps it, and every request checks the version against the database, so old tokens stop working at once instead of up to an hour later.
+- **Password changes and resets**: changing a password needs the current one; a forgotten one is reset with an emailed link that works once, for an hour (only its hash is stored), and asking for a link says the same thing whether or not the account exists. Both end every other session, as does "sign out everywhere".
+- **Email** goes into an outbox table in the same transaction as whatever caused it, and a sender sends it over SMTP when one is configured, claiming rows with `for update skip locked` so several API servers never send the same email.
+- **Taking tokens back**: each token carries the user's *token version*. Changing someone's role or password, turning off their two-factor or signing out everywhere bumps it, and every request checks the version against the database, so old tokens stop working at once instead of up to an hour later.
 
 ### Who may call what
 
@@ -120,21 +122,21 @@ Prices and events live in Postgres. Which seats are free, held or sold is only e
 
 A big on-sale is thousands of fans pressing "buy" in the same second. An organizer can give an event a waiting room with a rate, like 300 fans a minute. Code: [`queue/WaitingRoom.java`](../backend/src/main/java/dev/seatline/api/queue/WaitingRoom.java).
 
-- **Joining** gives the fan a number in line. Joining again keeps the same number, so refreshing the page doesn't lose your place.
+- **Joining** gives the fan a number in line. Joining again keeps the same number, so refreshing the page doesn't lose your place, and joining again once let in keeps the pass rather than taking a second number. One network address can bring at most 50 accounts into an event's line in an hour (a Redis set per address), which is plenty for a dorm behind one address but stops a script with a pile of accounts filling the line.
 - **Moving the line** needs no background job. Fans let in so far = rate × minutes since the sale opened, so any API server can tell from the clock whether your number has come up. Your place is your number minus that, and the estimated wait is your place divided by the rate.
 - **Unused turns aren't saved up.** A new number is `max(last number, let in so far) + 1`, worked out in one Redis script so two servers can't hand out the same one. If the line sat empty for half an hour, a crowd that arrives now still goes in at the rate.
 - **Arriving early gives no edge.** Organizers can set when sales open. Fans who join before then wait in a separate set with random scores, and the first request after the opening turns them into numbers 1, 2, 3... in that random order (once, guarded inside the same script). A bot that joins the first millisecond is no better off than a person who joined five minutes early.
 - **Getting in** gives a 10-minute pass (a Redis key tied to the account, with a time limit). Holding seats for that event needs the pass; without it the API answers `403 wait_in_queue`.
 - All of it is in Redis, so every API server sees the same line.
 
-**Cooldown.** A fan whose hold runs out unpaid can't hold seats for that event again for 2 minutes, so nobody can keep seats away from others by holding and letting go over and over. Letting a hold go yourself doesn't count.
+**Cooldown.** A fan whose hold runs out unpaid can't hold seats for that event again for 2 minutes, so nobody can keep seats away from others by holding and letting go over and over. Letting a hold go early costs nothing, but letting it go after sitting on it for more than half its 10 minutes counts the same as running out; otherwise letting go at 9:59 would dodge the wait.
 
 ### Buying tickets
 
 Code: [`order/OrderService.java`](../backend/src/main/java/dev/seatline/api/order/OrderService.java).
 
 1. **Hold.** The fan picks seats. The API prices them (same rules as a quote), then asks the ledger to hold all of them for 10 minutes, or none. If even one is taken the fan gets `409 seats_taken` and nothing is held. The quoted price is saved with the hold so checkout charges exactly that.
-2. **Pay.** Checkout first writes a *payment attempt* row, then charges the card. Charges are idempotent (the key is the hold plus the card), so pressing "pay" twice charges once.
+2. **Pay.** Checkout first writes a *payment attempt* row, then charges the card. The charge's idempotency key is the hold plus an attempt number (`hold:1`), and every click joins the hold's current attempt, so pressing "pay" ten times, even with different cards, charges once. A new attempt (`hold:2`) only starts after a decline. A hold that was let go or has run out can't start a charge at all, and an order that comes to $0 never reaches the card processor.
 3. **Confirm.** The API asks the ledger to turn the hold into tickets. If the hold ran out while the fan was paying, the ledger refuses (it uses the time stamped in the log, so every copy agrees) and the API refunds the charge.
 4. **Record.** Only after the ledger said yes are the order and tickets written to Postgres, in one transaction, along with a confirmation email in the outbox and the promo code's use count.
 
@@ -142,9 +144,13 @@ Code: [`order/OrderService.java`](../backend/src/main/java/dev/seatline/api/orde
 
 **Promo codes** are reserved when seats are held (`used < max_uses` checked and incremented in one statement), and given back if the hold is released or runs out unpaid, so the last use of a code can't go to several fans. Every API server also tells the ledger to clear out expired holds every 5 seconds, which is harmless when several do it.
 
-**Payments** sit behind a small interface ([`payment/Payments.java`](../backend/src/main/java/dev/seatline/api/payment/Payments.java)). For now it's a stand-in that approves `tok_visa` and declines `tok_declined`, the way Stripe's test cards do; the Stripe version plugs into the same interface.
+**Payments** sit behind a small interface ([`payment/Payments.java`](../backend/src/main/java/dev/seatline/api/payment/Payments.java)). For now it's a stand-in that approves the test cards `tok_visa`, `tok_mastercard` and `tok_amex` and declines anything else, the way Stripe's test mode does; the Stripe version plugs into the same interface.
 
-**After buying**, a fan can give a ticket to another account (the ticket's version goes up, so a screenshot of the old QR code stops working) or hand it back for a refund of what they paid, which puts the seat back on sale.
+**After buying**, a fan can give a ticket to another account (the ticket's version goes up, so a screenshot of the old QR code stops working) or hand it back for a refund of its face value, which puts the seat back on sale. Only the buyer can hand a ticket back, since the money goes to the card that paid, and not once it's been scanned or the show has started.
+
+**Cancelling an event** takes it off sale, marks every live ticket cancelled (they stop scanning), and queues one refund per order for the full amount paid, fees included, less anything already refunded for returned tickets. The refund id is `cancel:<order>`, so running it twice refunds once. A payment that was mid-flight when the event was cancelled can still land as an order; the reconciler refunds those too. Ticket holders get an email.
+
+**Rate limits.** Quotes (60 a minute) and holds (30 a minute) are limited per account with a counter in Redis, shared by every API server. Nobody picking seats by hand gets near that; a script trying promo codes does.
 
 ### Tickets at the door
 
@@ -153,7 +159,19 @@ Code: [`ticket/`](../backend/src/main/java/dev/seatline/api/ticket/).
 - A ticket's QR code holds `SL1.<ticket id>.<version>.<step>.<signature>`. The signature is an HMAC with a server-side key, so codes can't be made up or edited. The app draws the QR code from that text.
 - **The code changes every 15 seconds.** The step is the current 15-second window; the app fetches a new code as it rolls over, and the door accepts only the current step or one either side. A screenshot sent to someone else is refused as EXPIRED within about half a minute.
 - **Transfers** bump the ticket's version in the ledger, so the old owner's code (or a screenshot of it) stops working while the new owner's works.
-- **Scanning** (door staff only) checks the signature, then asks the ledger whether the ticket still exists and which version is current, then marks it scanned in Postgres with `update ... where scanned_at is null`. Only one update can match, so two doors scanning the same code at the same moment let it in once. The answer is one of OK, ALREADY_SCANNED (with the time of the first scan), WRONG_EVENT, OLD_CODE (from before a transfer), EXPIRED (a stale screenshot) or INVALID.
+- **Door teams.** Scanning happens at one event, and door staff can only scan at events whose organizer added them to the door team (by email; the account must already be door staff). The scanner app lists only those events. Admins can scan anywhere.
+- **Scanning** checks the signature, then asks the ledger whether the ticket still exists and which version is current, then marks it scanned in Postgres with `update ... where scanned_at is null`. Only one update can match, so two doors scanning the same code at the same moment let it in once. The answer is one of OK, ALREADY_SCANNED (with the time of the first scan), WRONG_EVENT, OLD_CODE (from before a transfer), EXPIRED (a stale screenshot), CANCELLED (the event was called off) or INVALID.
+
+### In a rush
+
+The sell-out load test ([`loadtest/`](../loadtest/), results in [`results/sellout.json`](results/sellout.json)) sends 10,000 fans at 5,000 seats through the real API, ledger and database, each loading the live seat map, holding one or two seats and paying, and retrying when someone beats them to a seat. The first runs found four problems, each now fixed:
+
+- **Every fan's seat-map poll was its own ledger read.** Now each API server shares one read per event for half a second: the first request asks the ledger and everyone arriving meanwhile waits for that answer (a `CompletableFuture` per event). Fifty fans polling at once cost one ledger read (`SeatMapSharingTest`).
+- **Holding seats priced the whole venue.** The quote loaded every seat to find the few requested; it now asks Postgres for just those seats.
+- **Sequential scans.** Holds by fan, tickets by order and event, and payment attempts by hold had no indexes; at thousands of rows a second those scans dominated. Migration `V7` adds them.
+- **Waiting for a database connection.** With requests queueing for the pool, slow ones timed out after 30 seconds. The pool now gives up after 5 seconds, and the API turns "database busy" into `503 try_again`, which the app shows as "very busy, try again". A fan sees a quick answer instead of a spinning page, and a payment that couldn't be written in the rush is finished or refunded by the reconciler afterwards.
+
+After the fixes, all 5,000 seats sold in about 100 seconds with a purchase p99 of 639 ms and nothing double-sold, on one 4-core machine running everything.
 
 ### Data
 
@@ -165,15 +183,18 @@ Code: [`frontend/`](../frontend/).
 
 - **One origin.** The browser only talks to the Next.js server; [`app/api/[...path]`](../frontend/app/api/) passes each request on to the Spring Boot API (`SEATLINE_API_URL`). So there's no CORS to open up, and the API can sit on a private network.
 - **Sign-in** keeps the API's access token in the browser and sends it as a bearer token. Every rule about who may do what lives in the API; the app only hides buttons a person can't use.
-- **Live data by polling**, not sockets: the seat map every 2 seconds, place in line every 3, the organizer dashboard every 2, the chaos panel every second. Simple, works through any proxy, and the API's reads are cheap because the seat map comes from the ledger's memory.
-- **The seat map** is one SVG drawn from the venue's x/y layout. Each seat is a labelled button for screen readers; arrow keys move between seats and Enter or Space picks one. It fits itself to the screen and can be zoomed and dragged. A seat someone else takes drops out of your picks on the next poll, and the hold button says why if it fails.
+- **Live data by polling**, not sockets: the seat map every 2 seconds, place in line every 3, the organizer dashboard every 2, the chaos panel every second. Simple, works through any proxy, and the API's reads are cheap because the seat map comes from the ledger's memory and is shared between everyone polling the same event.
+- **The seat map** is one SVG drawn from the venue's x/y layout. Each seat is a labelled button for screen readers; arrow keys move between seats and Enter or Space picks one. It fits itself to the screen and can be zoomed and dragged; on a touch screen a seat is never drawn smaller than 24 pixels, so a big venue starts zoomed in and scrolls. A seat someone else takes drops out of your picks on the next poll, and the hold button says why if it fails.
 - **Holds survive a reload**: the hold id is kept for the tab so checkout can be reopened, and the API's `GET /holds/{id}` says whether it's still open, paid, released or expired.
+- **Accounts**: an account page for two-step sign-in (QR code and setup key), password changes and signing out everywhere; forgot-password and reset pages; an admin page to find accounts and change roles.
 - **Door scanner** uses the phone camera (jsQR reads the frames) with a typed-code fallback.
 - **Browser tests** ([`e2e/`](../frontend/e2e/)) run every flow against the real stack in a desktop browser and an emulated phone, plus axe accessibility checks in both themes.
 
 ## Running it
 
-[`docker-compose.yml`](../docker-compose.yml) runs everything on one machine. A one-off `certs` container makes the certificate authority and the node and API certificates into a volume, then deletes the authority's private key, so no new certificates can be made from it. The five ledger nodes sit on a `ledger` network with the API and nothing else; Postgres, Redis, the API and the web app share an `app` network, and only the web app (port 3000) and, for local use, the API and Postgres on 127.0.0.1 are published. The images ([`infra/docker/`](../infra/docker/)) run as a non-root user; the Java image is built once and split into a ledger target and an API target.
+[`docker-compose.yml`](../docker-compose.yml) runs everything on one machine for development. A one-off `certs` container (with openssl baked into its image, so starting the stack needs no internet) makes the certificate authority and the node and API certificates into a volume, then deletes the authority's private key, so no new certificates can be made from it. The five ledger nodes sit on a `ledger` network with the API and nothing else; Postgres, Redis, the API and the web app share an `app` network, and only the web app (port 3000) and, for local use, the API and Postgres on 127.0.0.1 are published. The images ([`infra/docker/`](../infra/docker/)) run as a non-root user; the Java image is built once and split into a ledger target and an API target.
 
 CI builds the images, starts the stack and runs the browser tests on every push.
+
+For real use, [`deploy/`](../deploy/) has a production Compose file and a setup script (step by step for AWS EC2 in [`deploy/README.md`](../deploy/README.md)). The differences: Caddy terminates HTTPS with a Let's Encrypt certificate and is the only thing published; the API refuses to start without a token-signing key; Postgres and Redis have generated passwords; each container mounts only its own TLS key and the authority's key never reaches the server; the ledger's crash controls are off; and the Java containers have memory limits so five ledger nodes and the API fit on one 8 GB server. The web app sends a Content Security Policy that only allows the site itself.
 

@@ -22,12 +22,12 @@ x-ledger: &ledger
 
 services:
   certs:
-    image: alpine:3.20
+    build:
+      context: .
+      dockerfile: infra/docker/certs.Dockerfile
+    image: seatline-certs
     volumes:
       - certs:/certs
-      - ./scripts/certs.sh:/certs.sh:ro
-    # only the first time; the nodes keep their identity across restarts
-    command: sh -c "[ -f /certs/ca.crt ] || (apk add --no-cache bash openssl >/dev/null && bash /certs.sh /certs 5 825 && chmod 644 /certs/*.key && rm -f /certs/ca.key)"
 
   ledger-1:
     <<: *ledger

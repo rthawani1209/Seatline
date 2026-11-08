@@ -1,0 +1,11 @@
+# HTTPS for Seatline. Caddy gets and renews the certificate itself. It also sets X-Forwarded-For
+# to the real client address (anything a client sends in that header is replaced, since no
+# proxy in front of Caddy is trusted), which the API's login limits rely on.
+{$SEATLINE_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy web:3000
+}

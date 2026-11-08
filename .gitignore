@@ -11,3 +11,4 @@ out/
 data/
 .env
 .jqwik-database
+deploy/secrets/

@@ -4,7 +4,7 @@ Ticketing for sold-out events that never sells a seat twice, even when servers c
 
 When thousands of fans hit "Buy" in the same second, ticketing sites tend to fall over or hand the same seat to two people. Seatline puts fans through a fair waiting room, holds seats for ten minutes while they pay, and records every sale in a seat ledger copied across five servers that vote on each change (the Raft consensus algorithm, written from scratch in Java). A sale only counts once three of the five agree, so you can switch two servers off mid-sale and nothing is lost or double-sold.
 
-> Work in progress: the ledger, API, web app and Docker setup are done; the load test and AWS deploy are next.
+> Work in progress: the ledger, API, web app, Docker setup, load test and production setup are done; going live on AWS is next.
 
 ## Repo layout
 
@@ -23,28 +23,32 @@ seatline/
 │   └── src/main/proto/  ledger.proto: gRPC services and messages
 ├── backend/             Spring Boot API: accounts, roles, events, waiting room, checkout
 │   └── src/main/java/dev/seatline/api/
-│       ├── account/     sign-up, email verification, login, two-factor codes, login rate limits
+│       ├── account/     sign-up, email verification, login, two-factor codes, password reset,
+│       │                login rate limits, sending email, admin role changes
 │       ├── security/    who may call which route, access tokens
 │       ├── venue/       venues and seat maps (sections, rows, accessible and limited-view seats)
-│       ├── event/       events, price tiers, promo codes, all-in pricing and quotes
+│       ├── event/       events, price tiers, promo codes, all-in pricing, quotes, shared seat map
 │       ├── seats/       the API's connection to the seat ledger
-│       ├── order/       holds, checkout, tickets, transfers and returns
+│       ├── order/       holds, checkout, tickets, transfers, returns, cancelling an event
 │       ├── queue/       the waiting room (Redis)
-│       ├── ticket/      signed QR codes and door scanning
+│       ├── ticket/      signed QR codes, door teams and door scanning
 │       ├── payment/     payment provider interface (stand-in until Stripe keys are set)
-│       └── web/         error responses
+│       └── web/         error responses, rate limits
 ├── frontend/            Next.js web app for fans, organizers and door staff
 │   ├── app/             pages: events, seat picker, waiting room, checkout, tickets, sign-in,
-│   │                    organizer (event builder, live dashboard, chaos panel), door scanner,
-│   │                    and api/ which passes requests through to the Spring Boot API
+│   │                    account (two-step sign-in, password), password reset, organizer (event
+│   │                    builder, live dashboard, promo codes, door team, cancel, chaos panel),
+│   │                    door scanner, admin, and api/ which passes requests through to the API
 │   ├── components/      seat map, header, ticket QR code, dialogs
 │   ├── lib/             API client, sign-in state, polling hooks, formatting
 │   └── e2e/             Playwright browser tests against the whole stack (desktop and phone)
-├── loadtest/            Gatling "simulate a sell-out"              (coming)
+├── loadtest/            Gatling "simulate a sell-out": thousands of fans buy at once, then the books are checked
+├── deploy/              production setup for one server: Compose file with Caddy for HTTPS,
+│                        setup.sh, and README.md with the AWS EC2 steps
 ├── infra/
-│   └── docker/          Dockerfiles for the ledger, the API and the web app
-│                        (AWS Terraform coming)
-├── scripts/             check.sh (same checks as CI), chaos.sh and bench.sh (write docs/results/), certs.sh (TLS)
+│   └── docker/          Dockerfiles for the ledger, the API, the web app and the certificates
+├── scripts/             check.sh (same checks as CI), chaos.sh, bench.sh and loadtest.sh (write docs/results/),
+│                        certs.sh (TLS)
 ├── docs/                ARCHITECTURE, INTERVIEW, CLAIMS (every claim and its proof), results/
 ├── docker-compose.yml   the whole stack on one machine: 5 ledger nodes with mutual TLS, API,
 │                        Postgres, Redis, web app
@@ -59,7 +63,9 @@ You need Docker.
 docker compose up -d --build
 ```
 
-Then open http://localhost:3000. The first start makes the TLS certificates for the five ledger nodes and the API. Emails aren't sent yet: confirmation codes go to the `outbox_emails` table in Postgres (`docker compose exec postgres psql -U seatline -c 'select body from outbox_emails order by id desc limit 1'`). Set `SEATLINE_JWT_SECRET` in a `.env` file to keep people signed in across API restarts.
+Then open http://localhost:3000. The first start makes the TLS certificates for the five ledger nodes and the API. Locally no email is sent: confirmation codes and reset links wait in the `outbox_emails` table (`docker compose exec postgres psql -U seatline -c 'select body from outbox_emails order by id desc limit 1'`); set `SEATLINE_SMTP_HOST` and friends to send them. Set `SEATLINE_JWT_SECRET` in a `.env` file to keep people signed in across API restarts. Every new account is a fan; to try the organizer, door or admin screens, change your role in Postgres (`update users set role = 'ADMIN' where email = '...'`) and sign in again.
+
+To run it for real on a server, see [`deploy/README.md`](deploy/README.md).
 
 ## Running a ledger cluster by hand
 
@@ -95,3 +101,5 @@ The ledger tests run on a simulated network with a fixed random seed, so every r
 CI runs it on 1,000 seeds. Breaking retry deduplication or letting a leader answer reads without confirming it's still the leader both make it fail within a few seeds.
 
 `Figure8Test` replays the trickiest case from the Raft paper message by message: a leader must not treat an old entry as committed just because most servers have a copy. Remove that check from `RaftNode.maybeCommit` and the test shows two servers applying different sales at the same position in the log.
+
+**Load test.** With the stack up, `scripts/loadtest.sh -Dfans=10000 -DrampSeconds=300` signs in 10,000 fans and sends them at a 5,000-seat event, then checks the books from Postgres and the ledger and writes [`docs/results/sellout.json`](docs/results/sellout.json). Under Docker on a laptop, point it at the API container's own address with `-Dapi=http://<container ip>:8080`; Docker's port forwarding can't keep up with that many connections.

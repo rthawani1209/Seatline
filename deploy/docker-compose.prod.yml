@@ -1,0 +1,154 @@
+# Seatline on one server, for real use: HTTPS in front, secrets required, ledger admin off.
+# Run deploy/setup.sh rather than this file directly; it makes the secrets and certificates first.
+#
+# Differences from the development docker-compose.yml in the repo root:
+#   - Caddy terminates HTTPS (certificates from Let's Encrypt) and is the only thing published;
+#   - the API refuses to start without SEATLINE_JWT_SECRET (SEATLINE_PRODUCTION=true);
+#   - Postgres and Redis have passwords and no published ports;
+#   - each container mounts only its own TLS key, and the CA's private key isn't on the server;
+#   - the ledger's crash/revive controls are off unless SEATLINE_CHAOS=true (for a demo).
+
+x-ledger: &ledger
+  build:
+    context: ..
+    dockerfile: infra/docker/java.Dockerfile
+    target: ledger
+  image: seatline-ledger
+  restart: unless-stopped
+  # the JVM sizes its heap from this; without it five ledgers and the API could each try to take
+  # 70% of the machine
+  mem_limit: 640m
+  networks: [ledger]
+
+x-ledger-env: &ledger-env
+  SEATLINE_CLUSTER: "1=ledger-1:7000,2=ledger-2:7000,3=ledger-3:7000,4=ledger-4:7000,5=ledger-5:7000"
+  SEATLINE_PORT: "8000"
+  SEATLINE_METRICS: "9100"
+  SEATLINE_ADMIN: ${SEATLINE_CHAOS:-false}
+  SEATLINE_TLS_CERT: /tls/node.crt
+  SEATLINE_TLS_KEY: /tls/node.key
+  SEATLINE_TLS_CA: /tls/ca.crt
+
+services:
+  ledger-1:
+    <<: *ledger
+    hostname: ledger-1
+    environment: { <<: *ledger-env, SEATLINE_ID: "1" }
+    volumes: [ "./secrets/ledger-1:/tls:ro", "ledger-1:/data" ]
+  ledger-2:
+    <<: *ledger
+    hostname: ledger-2
+    environment: { <<: *ledger-env, SEATLINE_ID: "2" }
+    volumes: [ "./secrets/ledger-2:/tls:ro", "ledger-2:/data" ]
+  ledger-3:
+    <<: *ledger
+    hostname: ledger-3
+    environment: { <<: *ledger-env, SEATLINE_ID: "3" }
+    volumes: [ "./secrets/ledger-3:/tls:ro", "ledger-3:/data" ]
+  ledger-4:
+    <<: *ledger
+    hostname: ledger-4
+    environment: { <<: *ledger-env, SEATLINE_ID: "4" }
+    volumes: [ "./secrets/ledger-4:/tls:ro", "ledger-4:/data" ]
+  ledger-5:
+    <<: *ledger
+    hostname: ledger-5
+    environment: { <<: *ledger-env, SEATLINE_ID: "5" }
+    volumes: [ "./secrets/ledger-5:/tls:ro", "ledger-5:/data" ]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: seatline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run deploy/setup.sh}
+      POSTGRES_DB: seatline
+    volumes: [ "postgres:/var/lib/postgresql/data" ]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "seatline"]
+      interval: 2s
+      retries: 30
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?run deploy/setup.sh}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping"]
+      interval: 2s
+      retries: 30
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [app]
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/docker/java.Dockerfile
+      target: api
+    image: seatline-api
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      SEATLINE_PRODUCTION: "true"
+      SEATLINE_DB_URL: jdbc:postgresql://postgres:5432/seatline
+      SEATLINE_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      SEATLINE_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      SEATLINE_LEDGER: "1=ledger-1:8000,2=ledger-2:8000,3=ledger-3:8000,4=ledger-4:8000,5=ledger-5:8000"
+      # the chaos panel only works when the nodes' admin controls are on (SEATLINE_CHAOS=true)
+      SEATLINE_LEDGER_ADMIN: ${SEATLINE_LEDGER_ADMIN:-}
+      SEATLINE_LEDGERTLS_CERT: /tls/node.crt
+      SEATLINE_LEDGERTLS_KEY: /tls/node.key
+      SEATLINE_LEDGERTLS_CA: /tls/ca.crt
+      SEATLINE_JWT_SECRET: ${SEATLINE_JWT_SECRET:?run deploy/setup.sh}
+      SEATLINE_PUBLIC_URL: https://${SEATLINE_DOMAIN:?set SEATLINE_DOMAIN in deploy/.env}
+      SEATLINE_SMTP_HOST: ${SEATLINE_SMTP_HOST:-}
+      SEATLINE_SMTP_PORT: ${SEATLINE_SMTP_PORT:-587}
+      SEATLINE_SMTP_USER: ${SEATLINE_SMTP_USER:-}
+      SEATLINE_SMTP_PASSWORD: ${SEATLINE_SMTP_PASSWORD:-}
+      SEATLINE_MAIL_FROM: ${SEATLINE_MAIL_FROM:-}
+    volumes: [ "./secrets/api:/tls:ro" ]
+    networks: [app, ledger]
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+    image: seatline-web
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      SEATLINE_API_URL: http://api:8080
+    networks: [app, edge]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      SEATLINE_DOMAIN: ${SEATLINE_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    networks: [edge]
+
+networks:
+  edge:
+  app:
+    internal: true
+  ledger:
+    internal: true
+
+volumes:
+  postgres:
+  caddy:
+  ledger-1:
+  ledger-2:
+  ledger-3:
+  ledger-4:
+  ledger-5:
