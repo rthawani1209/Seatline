@@ -2,6 +2,7 @@ package dev.seatline.api.event;
 
 import dev.seatline.api.account.AccountService;
 import dev.seatline.api.web.CurrentUser;
+import dev.seatline.api.web.RateLimiter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Future;
 import jakarta.validation.constraints.Max;
@@ -41,7 +42,8 @@ class EventController {
                         @NotEmpty @Size(max = 10) List<@Valid TierRequest> tiers) {}
 
     record PromoRequest(@NotBlank @Pattern(regexp = "[A-Za-z0-9]{3,20}") String code,
-                        @Min(1) @Max(100) int percentOff, @Min(1) int maxUses, Instant expiresAt) {}
+                        @Min(1) @Max(100) int percentOff, @Min(1) @Max(1_000_000) int maxUses,
+                        @Future Instant expiresAt) {}
 
     record QuoteRequest(@NotEmpty @Size(max = 20) List<@Valid Item> items, String promoCode) {
         record Item(@NotBlank String seat, @NotNull UUID tierId) {}
@@ -50,11 +52,13 @@ class EventController {
     private final EventService events;
     private final AccountService accounts;
     private final BestSeats bestSeats;
+    private final RateLimiter limiter;
 
-    EventController(EventService events, AccountService accounts, BestSeats bestSeats) {
+    EventController(EventService events, AccountService accounts, BestSeats bestSeats, RateLimiter limiter) {
         this.events = events;
         this.accounts = accounts;
         this.bestSeats = bestSeats;
+        this.limiter = limiter;
     }
 
     @PostMapping("/events")
@@ -98,14 +102,26 @@ class EventController {
         events.publish(id, CurrentUser.of(jwt));
     }
 
+    @GetMapping("/events/{id}/promo-codes")
+    List<EventService.Promo> promos(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        return events.promos(id, CurrentUser.of(jwt));
+    }
+
     @PostMapping("/events/{id}/promo-codes")
     @ResponseStatus(HttpStatus.CREATED)
     void addPromo(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody PromoRequest r) {
         events.addPromo(id, CurrentUser.of(jwt), r.code(), r.percentOff(), r.maxUses(), r.expiresAt());
     }
 
+    /**
+     * Fans quote as they pick seats, so a person never gets near this. A script trying promo codes
+     * one after another does.
+     */
+    static final int QUOTES_PER_MINUTE = 60;
+
     @PostMapping("/events/{id}/quote")
     EventService.Quote quote(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody QuoteRequest r) {
+        limiter.spend("quote:" + jwt.getSubject(), QUOTES_PER_MINUTE);
         String email = accounts.get(CurrentUser.of(jwt).id()).email();
         List<EventService.QuoteItem> items = r.items().stream()
                 .map(i -> new EventService.QuoteItem(i.seat(), i.tierId())).toList();

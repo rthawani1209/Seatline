@@ -32,6 +32,10 @@ class AuthController {
 
     record LoginResponse(String token, Instant expiresAt) {}
 
+    record ForgotRequest(@NotBlank @Email @Size(max = 254) String email) {}
+
+    record ResetRequest(@NotBlank @Size(max = 100) String token, @NotBlank @Size(min = 12, max = 128) String password) {}
+
     private final AccountService accounts;
 
     AuthController(AccountService accounts) {
@@ -54,5 +58,17 @@ class AuthController {
     LoginResponse login(@Valid @RequestBody LoginRequest r, HttpServletRequest http) {
         TokenService.Token t = accounts.login(r.email(), r.password(), r.code(), http.getRemoteAddr());
         return new LoginResponse(t.value(), t.expiresAt());
+    }
+
+    @PostMapping("/forgot")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void forgot(@Valid @RequestBody ForgotRequest r, HttpServletRequest http) {
+        accounts.forgotPassword(r.email(), http.getRemoteAddr());
+    }
+
+    @PostMapping("/reset")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void reset(@Valid @RequestBody ResetRequest r) {
+        accounts.resetPassword(r.token(), r.password());
     }
 }

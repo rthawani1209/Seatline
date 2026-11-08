@@ -1,7 +1,10 @@
 package dev.seatline.api.account;
 
+import dev.seatline.api.security.TokenService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -12,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @RestController
@@ -23,6 +27,10 @@ class MeController {
     record TwoFactorSetup(String secret, String uri) {}
 
     record CodeRequest(@NotBlank String code) {}
+
+    record PasswordRequest(@NotBlank String currentPassword, @NotBlank @Size(min = 12, max = 128) String newPassword) {}
+
+    record NewToken(String token, Instant expiresAt) {}
 
     private final AccountService accounts;
 
@@ -50,8 +58,23 @@ class MeController {
     }
 
     @PostMapping("/2fa/disable")
+    NewToken disable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CodeRequest r) {
+        TokenService.Token t = accounts.disableTwoFactor(UUID.fromString(jwt.getSubject()), r.code());
+        return new NewToken(t.value(), t.expiresAt());
+    }
+
+    @PostMapping("/password")
+    NewToken password(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody PasswordRequest r,
+                      HttpServletRequest http) {
+        TokenService.Token t = accounts.changePassword(UUID.fromString(jwt.getSubject()), r.currentPassword(),
+                r.newPassword(), http.getRemoteAddr());
+        return new NewToken(t.value(), t.expiresAt());
+    }
+
+    /** Ends every session of this account, on every device, this one included. */
+    @PostMapping("/sign-out-everywhere")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void disable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CodeRequest r) {
-        accounts.disableTwoFactor(UUID.fromString(jwt.getSubject()), r.code());
+    void signOutEverywhere(@AuthenticationPrincipal Jwt jwt) {
+        accounts.signOutEverywhere(UUID.fromString(jwt.getSubject()));
     }
 }

@@ -15,6 +15,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
@@ -38,6 +39,7 @@ class EventFlowTest {
     @Autowired ObjectMapper json;
     @Autowired TestUsers testUsers;
     @Autowired Seats ledger;
+    @Autowired JdbcTemplate jdbc;
 
     String organizer;
     String venueId;
@@ -150,9 +152,15 @@ class EventFlowTest {
         String eventId = createEvent();
         post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isNoContent());
         String expired = Instant.now().minus(1, ChronoUnit.HOURS).toString();
+        // a code can't be made already expired
         post("/events/" + eventId + "/promo-codes", organizer, """
                 {"code": "LASTWEEK", "percentOff": 50, "maxUses": 10, "expiresAt": "%s"}""".formatted(expired))
-                .andExpect(status().isCreated());
+                .andExpect(status().isBadRequest());
+        post("/events/" + eventId + "/promo-codes", organizer, """
+                {"code": "LASTWEEK", "percentOff": 50, "maxUses": 10, "expiresAt": "%s"}"""
+                .formatted(Instant.now().plus(1, ChronoUnit.DAYS))).andExpect(status().isCreated());
+        // but it does run out
+        jdbc.update("update promo_codes set expires_at = ?::timestamptz where code = 'LASTWEEK'", expired);
         String floorTier = tierId(body(mvc.perform(get("/events/" + eventId))), "Floor");
         String fan = testUsers.bearer(Role.FAN);
 
@@ -235,5 +243,76 @@ class EventFlowTest {
             }
         }
         throw new AssertionError("no tier " + name);
+    }
+
+    @Test
+    void layoutsAndSalesThatCantWorkAreRefused() throws Exception {
+        post("/venues", organizer, """
+                {"name": "Twice", "city": "Davis", "sections": [
+                  {"name": "Floor", "rows": [{"label": "A", "seats": 2}, {"label": "a", "seats": 2}]}]}""")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("duplicate_row_label"));
+
+        String startsAt = Instant.now().plus(2, ChronoUnit.DAYS).toString();
+        String after = Instant.now().plus(3, ChronoUnit.DAYS).toString();
+        post("/events", organizer, """
+                {"venueId": "%s", "name": "Backwards", "startsAt": "%s", "onSaleAt": "%s", "perFanLimit": 4,
+                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
+                 "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 1000, "sections": ["Floor", "Floor"]}]}"""
+                .formatted(venueId, startsAt, after))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("on_sale_after_start"));
+
+        // naming a section twice in one ticket type is just the same section
+        String eventId = body(post("/events", organizer, """
+                {"venueId": "%s", "name": "Tonight", "startsAt": "%s", "perFanLimit": 4,
+                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
+                 "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 1000, "sections": ["Floor", "Floor"]}]}"""
+                .formatted(venueId, startsAt)).andExpect(status().isCreated())).get("id").asText();
+        post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isNoContent());
+        String tier = tierId(body(mvc.perform(get("/events/" + eventId))), "GA");
+
+        // once the show has started, no more seats are sold
+        jdbc.update("update events set starts_at = now() - interval '1 minute' where id = ?::uuid", eventId);
+        post("/events/" + eventId + "/holds", testUsers.bearer(Role.FAN), """
+                {"items": [{"seat": "FLOOR-A-1", "tierId": "%s"}]}""".formatted(tier))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("event_started"));
+    }
+
+    @Test
+    void theOrganizerCanListTheirPromoCodes() throws Exception {
+        String eventId = createEvent();
+        post("/events/" + eventId + "/promo-codes", organizer, """
+                {"code": "zz10", "percentOff": 10, "maxUses": 5}""").andExpect(status().isCreated());
+        post("/events/" + eventId + "/promo-codes", organizer, """
+                {"code": "AA50", "percentOff": 50, "maxUses": 1}""").andExpect(status().isCreated());
+        JsonNode codes = body(mvc.perform(get("/events/" + eventId + "/promo-codes").header("Authorization", organizer))
+                .andExpect(status().isOk()));
+        assertThat(codes).hasSize(2);
+        assertThat(codes.get(0).get("code").asText()).isEqualTo("AA50");
+        assertThat(codes.get(1).get("code").asText()).isEqualTo("ZZ10");
+        assertThat(codes.get(1).get("used").asInt()).isZero();
+        mvc.perform(get("/events/" + eventId + "/promo-codes").header("Authorization", testUsers.bearer(Role.ORGANIZER)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void quotingIsLimitedSoPromoCodesCantBeGuessed() throws Exception {
+        String eventId = createEvent();
+        post("/events/" + eventId + "/publish", organizer, "{}").andExpect(status().isNoContent());
+        String tier = tierId(body(mvc.perform(get("/events/" + eventId))), "Floor");
+        String fan = testUsers.bearer(Role.FAN);
+        String guess = """
+                {"items": [{"seat": "FLOOR-B-1", "tierId": "%s"}], "promoCode": "GUESS%%d"}""".formatted(tier);
+        int refused = 0;
+        // a whole minute's budget plus one (two windows at most if the minute turns over mid-test)
+        for (int i = 0; i <= 2 * EventController.QUOTES_PER_MINUTE; i++) {
+            int code = post("/events/" + eventId + "/quote", fan, guess.formatted(i)).andReturn().getResponse().getStatus();
+            if (code == 429) {
+                refused++;
+            }
+        }
+        assertThat(refused).isPositive();
+        // someone else isn't affected
+        post("/events/" + eventId + "/quote", testUsers.bearer(Role.FAN), guess.formatted(0))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_promo_code"));
     }
 }

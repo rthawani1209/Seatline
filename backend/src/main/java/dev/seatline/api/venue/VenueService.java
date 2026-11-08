@@ -48,6 +48,13 @@ public class VenueService {
             if (!prefixes.add(label(spec.name(), "", 0))) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "duplicate_section_name");
             }
+            // and two rows called "A" would give two seats the same label
+            Set<String> rows = new HashSet<>();
+            for (RowSpec row : spec.rows()) {
+                if (!rows.add(row.label().trim().toUpperCase())) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "duplicate_row_label");
+                }
+            }
         }
         UUID venueId = UUID.randomUUID();
         db.sql("insert into venues (id, name, city, created_by) values (?, ?, ?, ?)")

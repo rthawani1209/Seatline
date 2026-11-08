@@ -8,6 +8,7 @@ import dev.seatline.ledger.seats.SeatLedger.SeatStatus;
 import dev.seatline.ledger.seats.SeatResult;
 import dev.seatline.api.web.ApiException;
 import dev.seatline.api.web.CurrentUser;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -19,11 +20,14 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class EventService {
@@ -60,17 +64,24 @@ public class EventService {
     private final VenueService venues;
     private final Clock clock;
     private final Seats seats;
+    private final long seatMapFreshNanos;
+    private final Map<UUID, CompletableFuture<SeatMap>> seatMaps = new ConcurrentHashMap<>();
 
-    public EventService(JdbcClient db, VenueService venues, Clock clock, Seats seats) {
+    public EventService(JdbcClient db, VenueService venues, Clock clock, Seats seats,
+                        @Value("${seatline.seat-map-cache-ms:500}") long seatMapCacheMillis) {
         this.db = db;
         this.venues = venues;
         this.clock = clock;
         this.seats = seats;
+        this.seatMapFreshNanos = seatMapCacheMillis * 1_000_000;
     }
 
     @Transactional
     public UUID create(CurrentUser by, UUID venueId, String name, Instant startsAt, int perFanLimit, Pricing pricing,
                        Integer queuePerMinute, Instant onSaleAt, List<TierSpec> tiers) {
+        if (onSaleAt != null && !onSaleAt.isBefore(startsAt)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "on_sale_after_start");
+        }
         Map<String, UUID> sectionIds = new HashMap<>();
         for (VenueService.Section s : venues.get(venueId).sections()) {
             sectionIds.put(s.name(), s.id());
@@ -90,7 +101,7 @@ public class EventService {
                     .params(tierId, eventId, t.name(), t.kind().name(), t.priceCents(),
                             t.endsAt() == null ? null : Timestamp.from(t.endsAt()))
                     .update();
-            for (String section : t.sections()) {
+            for (String section : new LinkedHashSet<>(t.sections())) { // naming a section twice is harmless
                 UUID sectionId = sectionIds.get(section);
                 if (sectionId == null) {
                     throw new ApiException(HttpStatus.BAD_REQUEST, "no_such_section");
@@ -189,14 +200,62 @@ public class EventService {
 
     public record SeatState(String seat, SeatStatus status) {}
 
-    /** Live status of every seat on sale for an event, straight from the ledger. */
+    /** One read of an event's seats; null seats means a draft, which only its organizer may see. */
+    private record SeatMap(long readAt, List<SeatState> seats) {}
+
+    /**
+     * Live status of every seat on sale for an event, from the ledger. In a big sale thousands of
+     * fans poll the same map, so one ledger read serves every request that arrives while it's
+     * running or in the half second after (seatline.seat-map-cache-ms). That can only show a seat
+     * as free a moment after someone took it; holding goes to the ledger, which says it's gone.
+     */
     public List<SeatState> seatStates(UUID eventId, CurrentUser viewer) {
-        Event e = getVisible(eventId, viewer);
-        Map<String, SeatStatus> live = e.status().equals("DRAFT") ? null : seats.statuses(eventId.toString());
-        if (live == null) {
-            return List.of();
+        while (true) {
+            CompletableFuture<SeatMap> current = seatMaps.get(eventId);
+            if (current != null && !(current.isDone() && stale(current))) {
+                SeatMap map;
+                try {
+                    map = current.join();
+                } catch (java.util.concurrent.CompletionException e) {
+                    // a failed read fails everyone who was waiting on it, the same as their own would have
+                    throw e.getCause() instanceof RuntimeException r ? r : e;
+                }
+                return map.seats() != null ? map.seats() : draftSeats(eventId, viewer);
+            }
+            CompletableFuture<SeatMap> mine = new CompletableFuture<>();
+            boolean ours = current == null ? seatMaps.putIfAbsent(eventId, mine) == null
+                    : seatMaps.replace(eventId, current, mine);
+            if (!ours) {
+                continue; // someone else just started a read; wait for theirs
+            }
+            try {
+                Event e = get(eventId);
+                SeatMap map = new SeatMap(System.nanoTime(), e.status().equals("DRAFT") ? null : read(eventId));
+                mine.complete(map);
+                if (map.seats() == null) {
+                    seatMaps.remove(eventId, mine); // a draft is about to be published; don't keep that answer
+                }
+                return map.seats() != null ? map.seats() : draftSeats(eventId, viewer);
+            } catch (RuntimeException failed) {
+                seatMaps.remove(eventId, mine);
+                mine.completeExceptionally(failed);
+                throw failed;
+            }
         }
-        return live.entrySet().stream().map(s -> new SeatState(s.getKey(), s.getValue())).toList();
+    }
+
+    private boolean stale(CompletableFuture<SeatMap> read) {
+        return read.isCompletedExceptionally() || System.nanoTime() - read.join().readAt() >= seatMapFreshNanos;
+    }
+
+    private List<SeatState> draftSeats(UUID eventId, CurrentUser viewer) {
+        getVisible(eventId, viewer); // 404 unless it's the organizer's own draft
+        return List.of();
+    }
+
+    private List<SeatState> read(UUID eventId) {
+        Map<String, SeatStatus> live = seats.statuses(eventId.toString());
+        return live == null ? List.of() : live.entrySet().stream().map(s -> new SeatState(s.getKey(), s.getValue())).toList();
     }
 
     @Transactional
@@ -213,24 +272,46 @@ public class EventService {
         }
     }
 
+    public record Promo(String code, int percentOff, int maxUses, int used, Instant expiresAt) {}
+
+    public List<Promo> promos(UUID eventId, CurrentUser by) {
+        requireOwner(eventId, by);
+        return db.sql("select code, percent_off, max_uses, used, expires_at from promo_codes where event_id = ? order by code")
+                .param(eventId)
+                .query((rs, n) -> new Promo(rs.getString(1), rs.getInt(2), rs.getInt(3), rs.getInt(4),
+                        rs.getTimestamp(5) == null ? null : rs.getTimestamp(5).toInstant()))
+                .list();
+    }
+
     /**
      * Prices seats for a fan before they hold them. Checks each seat is in a section the tier
      * covers, student prices go to student emails, and the promo code is live.
      */
     public Quote quote(UUID eventId, List<QuoteItem> items, String promo, String fanEmail) {
-        Event e = get(eventId);
+        return quote(get(eventId), items, promo, fanEmail);
+    }
+
+    /** For callers that already read the event (holding seats does), to save a lookup per hold. */
+    public Quote quote(Event e, List<QuoteItem> items, String promo, String fanEmail) {
+        UUID eventId = e.id();
         if (!e.status().equals("ON_SALE") || clock.instant().isBefore(e.onSaleAt())) {
             throw new ApiException(HttpStatus.CONFLICT, "not_on_sale");
+        }
+        if (!clock.instant().isBefore(e.startsAt())) {
+            throw new ApiException(HttpStatus.CONFLICT, "event_started");
         }
         if (items.size() > e.perFanLimit()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "over_limit");
         }
         int percentOff = promo == null || promo.isBlank() ? 0 : promoPercent(eventId, promo);
 
+        // only the seats asked for: in a 5,000-seat venue, loading the whole map on every hold was most
+        // of the database's work during a sell-out
         Map<String, String> sectionOfSeat = new HashMap<>();
         db.sql("""
                 select st.label, s.name from seats st join sections s on s.id = st.section_id
-                where s.venue_id = ?""").param(e.venueId())
+                where s.venue_id = ? and st.label = any(?)""")
+                .params(e.venueId(), items.stream().map(QuoteItem::seat).toArray(String[]::new))
                 .query(rs -> {
                     sectionOfSeat.put(rs.getString(1), rs.getString(2));
                 });

@@ -118,10 +118,10 @@ class AccountFlowTest {
     void repeatedFailuresAreRateLimited() throws Exception {
         String email = email();
         signUp(email);
-        for (int i = 0; i < LoginLimiter.MAX_PER_ACCOUNT; i++) {
+        for (int i = 0; i < LoginLimiter.MAX_PER_ADDRESS_AND_ACCOUNT; i++) {
             login(email, "wrong password!!", null).andExpect(status().isUnauthorized());
         }
-        // even the right password is refused until the window passes
+        // from this address, even the right password is refused until the window passes
         login(email, PASSWORD, null).andExpect(status().isTooManyRequests());
     }
 
@@ -143,5 +143,107 @@ class AccountFlowTest {
         // the code used to enable it can't be used again
         login(email, PASSWORD, Totp.code(secret, step)).andExpect(status().isUnauthorized());
         token(login(email, PASSWORD, Totp.code(secret, step + 1)));
+    }
+
+    @Test
+    void turningTwoFactorOffNeedsACodeAndKeepsOnlyThisSessionSignedIn() throws Exception {
+        String email = email();
+        String auth = "Bearer " + signUp(email);
+        String secret = json.readTree(mvc.perform(post("/me/2fa/setup").header("Authorization", auth))
+                .andReturn().getResponse().getContentAsString()).get("secret").asText();
+        long step = Totp.currentStep(Clock.systemUTC());
+        mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"code\": \"" + Totp.code(secret, step) + "\"}")).andExpect(status().isNoContent());
+
+        // the enabling code can't turn it off again, nor can a made-up one
+        for (String code : new String[] {Totp.code(secret, step), "12345"}) {
+            mvc.perform(post("/me/2fa/disable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"code\": \"" + code + "\"}")).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("bad_code"));
+        }
+
+        String fresh = json.readTree(mvc.perform(post("/me/2fa/disable").header("Authorization", auth)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"code\": \"" + Totp.code(secret, step + 1) + "\"}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get("token").asText();
+
+        mvc.perform(get("/me").header("Authorization", auth)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/me").header("Authorization", "Bearer " + fresh)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.twoFactor").value(false));
+        token(login(email, PASSWORD, null));
+    }
+
+    @Test
+    void oneTwoFactorCodeSentTenTimesAtOnceSignsInOnce() throws Exception {
+        String email = email();
+        String auth = "Bearer " + signUp(email);
+        String secret = json.readTree(mvc.perform(post("/me/2fa/setup").header("Authorization", auth))
+                .andReturn().getResponse().getContentAsString()).get("secret").asText();
+        long step = Totp.currentStep(Clock.systemUTC());
+        mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"code\": \"" + Totp.code(secret, step) + "\"}")).andExpect(status().isNoContent());
+
+        String code = Totp.code(secret, step + 1);
+        java.util.List<java.util.concurrent.Callable<Integer>> tries = new java.util.ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            tries.add(() -> login(email, PASSWORD, code).andReturn().getResponse().getStatus());
+        }
+        java.util.List<Integer> statuses = new java.util.ArrayList<>();
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            for (var f : pool.invokeAll(tries)) {
+                statuses.add(f.get());
+            }
+        }
+        org.assertj.core.api.Assertions.assertThat(statuses).containsOnlyOnce(200);
+    }
+
+    @Test
+    void changingThePasswordNeedsTheOldOneAndSignsOutOtherSessions() throws Exception {
+        String email = email();
+        String old = "Bearer " + signUp(email);
+        String other = "Bearer " + token(login(email, PASSWORD, null)); // a second device
+
+        mvc.perform(post("/me/password").header("Authorization", old).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"currentPassword\": \"not my password\", \"newPassword\": \"a brand new password\"}"))
+                .andExpect(status().isForbidden());
+        String fresh = "Bearer " + token(mvc.perform(post("/me/password").header("Authorization", old)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"currentPassword\": \"%s\", \"newPassword\": \"a brand new password\"}".formatted(PASSWORD))));
+
+        mvc.perform(get("/me").header("Authorization", other)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/me").header("Authorization", fresh)).andExpect(status().isOk());
+        login(email, PASSWORD, null).andExpect(status().isUnauthorized());
+        token(login(email, "a brand new password", null));
+    }
+
+    @Test
+    void signingOutEverywhereEndsEverySession() throws Exception {
+        String email = email();
+        String a = "Bearer " + signUp(email);
+        String b = "Bearer " + token(login(email, PASSWORD, null));
+        mvc.perform(post("/me/sign-out-everywhere").header("Authorization", a)).andExpect(status().isNoContent());
+        mvc.perform(get("/me").header("Authorization", a)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/me").header("Authorization", b)).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void aResetLinkSetsANewPasswordOnceAndStrangersLearnNothing() throws Exception {
+        String email = email();
+        String session = "Bearer " + signUp(email);
+
+        postJson("/auth/forgot", "{\"email\": \"%s\"}".formatted(email)).andExpect(status().isNoContent());
+        // an address with no account gets the same answer and no email
+        String nobody = email();
+        postJson("/auth/forgot", "{\"email\": \"%s\"}".formatted(nobody)).andExpect(status().isNoContent());
+        assertThat(jdbc.queryForObject("select count(*) from outbox_emails where to_address = ?", Integer.class, nobody)).isZero();
+
+        String body = jdbc.queryForObject("select body from outbox_emails where to_address = ? order by id desc limit 1",
+                String.class, email);
+        String token = body.substring(body.indexOf("token=") + 6, body.indexOf('\n', body.indexOf("token=")));
+        String reset = "{\"token\": \"%s\", \"password\": \"after the reset!\"}".formatted(token);
+        postJson("/auth/reset", reset).andExpect(status().isNoContent());
+        postJson("/auth/reset", reset).andExpect(status().isBadRequest()); // once only
+
+        mvc.perform(get("/me").header("Authorization", session)).andExpect(status().isUnauthorized());
+        token(login(email, "after the reset!", null));
     }
 }

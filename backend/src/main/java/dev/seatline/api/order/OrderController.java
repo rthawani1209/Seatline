@@ -2,6 +2,7 @@ package dev.seatline.api.order;
 
 import dev.seatline.api.event.EventService;
 import dev.seatline.api.web.CurrentUser;
+import dev.seatline.api.web.RateLimiter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -33,17 +34,30 @@ class OrderController {
 
     record TransferRequest(@NotBlank @Email String toEmail) {}
 
-    private final OrderService orders;
+    /** Far more than anyone picking seats by hand; stops a script cycling holds or guessing promo codes. */
+    static final int HOLDS_PER_MINUTE = 30;
 
-    OrderController(OrderService orders) {
+    private final OrderService orders;
+    private final RateLimiter limiter;
+
+    OrderController(OrderService orders, RateLimiter limiter) {
         this.orders = orders;
+        this.limiter = limiter;
     }
 
     @PostMapping("/events/{id}/holds")
     @ResponseStatus(HttpStatus.CREATED)
     OrderService.Hold hold(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody HoldRequest r) {
+        limiter.spend("hold:" + jwt.getSubject(), HOLDS_PER_MINUTE);
         List<EventService.QuoteItem> items = r.items().stream().map(i -> new EventService.QuoteItem(i.seat(), i.tierId())).toList();
         return orders.hold(id, CurrentUser.of(jwt), items, r.promoCode());
+    }
+
+    /** Calls the event off and refunds every order in full. Only its organizer (or an admin). */
+    @PostMapping("/events/{id}/cancel")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void cancel(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        orders.cancelEvent(id, CurrentUser.of(jwt));
     }
 
     @GetMapping("/holds/{id}")

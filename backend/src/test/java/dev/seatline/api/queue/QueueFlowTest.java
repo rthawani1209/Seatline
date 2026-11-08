@@ -16,6 +16,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.time.Instant;
@@ -38,6 +39,7 @@ class QueueFlowTest {
     @Autowired ObjectMapper json;
     @Autowired TestUsers testUsers;
     @Autowired JdbcTemplate jdbc;
+    @Autowired StringRedisTemplate redis;
 
     String eventId;
     String tier;
@@ -174,5 +176,60 @@ class QueueFlowTest {
         hold(fan, "FLOOR-A-4").andExpect(status().isTooManyRequests()).andExpect(jsonPath("$.error").value("cooldown"));
         jdbc.update("update holds set expires_at = now() - interval '3 minutes' where id = ?", ranOut);
         hold(fan, "FLOOR-A-4").andExpect(status().isCreated());
+    }
+
+    @Test
+    void lettingGoAtTheLastMinuteWaitsLikeRunningOut() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        join(fan);
+        openedSecondsAgo(60);
+        assertThat(inLine(fan).get("admitted").asBoolean()).isTrue();
+        String late = body(hold(fan, "FLOOR-A-3").andExpect(status().isCreated())).get("holdId").asText();
+        // as if the fan had sat on the seats for eight of the ten minutes
+        jdbc.update("update holds set expires_at = now() + interval '2 minutes' where id = ?", late);
+        call(HttpMethod.DELETE, "/holds/" + late, fan, null).andExpect(status().isNoContent());
+        hold(fan, "FLOOR-A-4").andExpect(status().isTooManyRequests()).andExpect(jsonPath("$.error").value("cooldown"));
+    }
+
+    @Test
+    void joiningAgainWhileLetInKeepsThePassAndDoesntTakeASecondPlace() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        join(fan);
+        openedSecondsAgo(60);
+        JsonNode in = inLine(fan);
+        assertThat(in.get("admitted").asBoolean()).isTrue();
+
+        long waitingBefore = waiting();
+        JsonNode again = join(fan);
+        assertThat(again.get("admitted").asBoolean()).isTrue();
+        assertThat(again.get("passExpiresAt").asText()).isNotBlank();
+        assertThat(waiting()).isEqualTo(waitingBefore);
+    }
+
+    /** Everyone with a number in the line (let-in fans are taken out of it). */
+    long waiting() {
+        return redis.opsForZSet().zCard("queue:" + eventId);
+    }
+
+    @Test
+    void oneAddressCanOnlyBringSoManyAccountsIntoTheLine() throws Exception {
+        String crowd = "203.0.113." + (int) (Math.random() * 250 + 1);
+        for (int i = 0; i < WaitingRoom.MAX_FANS_PER_ADDRESS; i++) {
+            joinFrom(testUsers.bearer(Role.FAN), crowd).andExpect(status().isOk());
+        }
+        joinFrom(testUsers.bearer(Role.FAN), crowd).andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error").value("too_many_attempts"));
+        // someone already in line can still check in again, and other addresses aren't affected
+        String inLine = testUsers.bearer(Role.FAN);
+        joinFrom(inLine, "198.51.100.7").andExpect(status().isOk());
+        joinFrom(inLine, "198.51.100.7").andExpect(status().isOk());
+    }
+
+    ResultActions joinFrom(String fan, String address) throws Exception {
+        return mvc.perform(request(HttpMethod.POST, "/events/" + eventId + "/queue").header("Authorization", fan)
+                .with(r -> {
+                    r.setRemoteAddr(address);
+                    return r;
+                }));
     }
 }

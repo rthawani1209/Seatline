@@ -62,6 +62,21 @@ public class WaitingRoom {
             redis.call('DEL', KEYS[3])
             return #early""", Long.class);
 
+    /**
+     * Accounts that can join one event's line from one network address in an hour. Generous enough
+     * for a dorm or an office behind one address, but a script with a pile of accounts can't fill
+     * the line with them.
+     */
+    static final int MAX_FANS_PER_ADDRESS = 50;
+
+    // atomic, so a burst from one address can't slip past the count
+    private static final DefaultRedisScript<Long> FROM = new DefaultRedisScript<>("""
+            if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return 1 end
+            if redis.call('SCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+            redis.call('SADD', KEYS[1], ARGV[1])
+            redis.call('EXPIRE', KEYS[1], ARGV[3])
+            return 1""", Long.class);
+
     private static final SecureRandom RANDOM = new SecureRandom();
 
     /**
@@ -84,14 +99,22 @@ public class WaitingRoom {
     }
 
     /** Joins the line (or keeps your place if you're already in it) and says where you are. */
-    public Status join(UUID eventId, UUID fan) {
+    public Status join(UUID eventId, UUID fan, String address) {
         EventService.Event e = withQueue(eventId);
+        Long ok = redis.execute(FROM, List.of("queue:" + e.id() + ":from:" + address), fan.toString(),
+                Integer.toString(MAX_FANS_PER_ADDRESS), "3600");
+        if (ok == null || ok == 0) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
+        }
         if (!isOpen(e)) {
             redis.opsForZSet().addIfAbsent(earlyKey(e), fan.toString(), RANDOM.nextDouble());
             return new Status(false, 0, 0, null, e.onSaleAt());
         }
         open(e);
-        redis.execute(JOIN, List.of(lineKey(e), lineKey(e) + ":seq"), fan.toString(), Long.toString(letIn(e)));
+        // already let in (say, the page was reloaded): keep the pass rather than taking a new number
+        if (!Boolean.TRUE.equals(redis.hasKey(passKey(e.id(), fan)))) {
+            redis.execute(JOIN, List.of(lineKey(e), lineKey(e) + ":seq"), fan.toString(), Long.toString(letIn(e)));
+        }
         return status(e, fan);
     }
 

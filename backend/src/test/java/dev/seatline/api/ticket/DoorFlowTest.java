@@ -29,6 +29,7 @@ import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -41,9 +42,11 @@ class DoorFlowTest {
     @Autowired TestUsers testUsers;
     @Autowired TicketCodes codes;
 
+    String organizer;
     String eventId;
     String fan;
     String door;
+    String doorEmail;
     List<String> tickets = new ArrayList<>();
 
     ResultActions call(HttpMethod method, String path, String auth, String body) throws Exception {
@@ -61,16 +64,8 @@ class DoorFlowTest {
     /** A fan with two paid tickets, and someone working the door. */
     @BeforeEach
     void ticketsSold() throws Exception {
-        String organizer = testUsers.bearer(Role.ORGANIZER);
-        String venue = body(call(HttpMethod.POST, "/venues", organizer, """
-                {"name": "Hall", "city": "Davis", "sections": [
-                  {"name": "Floor", "rows": [{"label": "A", "seats": 4}]}]}""")).get("id").asText();
-        eventId = body(call(HttpMethod.POST, "/events", organizer, """
-                {"venueId": "%s", "name": "Door Night", "startsAt": "%s", "perFanLimit": 4,
-                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
-                 "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 2000, "sections": ["Floor"]}]}"""
-                .formatted(venue, Instant.now().plus(30, ChronoUnit.DAYS)))).get("id").asText();
-        call(HttpMethod.POST, "/events/" + eventId + "/publish", organizer, "{}");
+        organizer = testUsers.bearer(Role.ORGANIZER);
+        eventId = newEvent();
         String tier = body(mvc.perform(request(HttpMethod.GET, "/events/" + eventId))).get("tiers").get(0).get("id").asText();
 
         fan = testUsers.bearer(Role.FAN);
@@ -79,7 +74,26 @@ class DoorFlowTest {
                 .formatted(tier, tier))).get("holdId").asText();
         body(call(HttpMethod.POST, "/holds/" + holdId + "/checkout", fan, "{\"cardToken\": \"tok_visa\"}"))
                 .get("tickets").forEach(t -> tickets.add(t.get("id").asText()));
-        door = testUsers.bearer(Role.DOOR_STAFF);
+        doorEmail = "door-" + UUID.randomUUID() + "@example.com";
+        door = testUsers.bearer(Role.DOOR_STAFF, doorEmail);
+        addToDoorTeam(eventId, doorEmail).andExpect(status().isCreated());
+    }
+
+    String newEvent() throws Exception {
+        String venue = body(call(HttpMethod.POST, "/venues", organizer, """
+                {"name": "Hall", "city": "Davis", "sections": [
+                  {"name": "Floor", "rows": [{"label": "A", "seats": 4}]}]}""")).get("id").asText();
+        String id = body(call(HttpMethod.POST, "/events", organizer, """
+                {"venueId": "%s", "name": "Door Night", "startsAt": "%s", "perFanLimit": 4,
+                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
+                 "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 2000, "sections": ["Floor"]}]}"""
+                .formatted(venue, Instant.now().plus(30, ChronoUnit.DAYS)))).get("id").asText();
+        call(HttpMethod.POST, "/events/" + id + "/publish", organizer, "{}");
+        return id;
+    }
+
+    ResultActions addToDoorTeam(String event, String email) throws Exception {
+        return call(HttpMethod.POST, "/events/" + event + "/door-staff", organizer, "{\"email\": \"" + email + "\"}");
     }
 
     String qr(String owner, String ticket) throws Exception {
@@ -87,9 +101,13 @@ class DoorFlowTest {
                 .get("code").asText();
     }
 
-    JsonNode scan(String code, String event) throws Exception {
+    ResultActions scanAs(String who, String code, String event) throws Exception {
         String e = event == null ? "" : ", \"eventId\": \"" + event + "\"";
-        return body(call(HttpMethod.POST, "/scan", door, "{\"code\": \"" + code + "\"" + e + "}").andExpect(status().isOk()));
+        return call(HttpMethod.POST, "/scan", who, "{\"code\": \"" + code + "\"" + e + "}");
+    }
+
+    JsonNode scan(String code, String event) throws Exception {
+        return body(scanAs(door, code, event).andExpect(status().isOk()));
     }
 
     @Test
@@ -108,10 +126,12 @@ class DoorFlowTest {
     void madeUpOrAlteredCodesAreRefused() throws Exception {
         String code = qr(fan, tickets.get(0));
         String otherTicket = code.replace(tickets.get(0), tickets.get(1)); // same signature, other ticket
-        assertThat(scan(otherTicket, null).get("result").asText()).isEqualTo("INVALID");
-        assertThat(scan("SL1.T-made-up.1.123.AAAAAAAAAAAAAAAAAAAAAA", null).get("result").asText()).isEqualTo("INVALID");
-        assertThat(scan("hello", null).get("result").asText()).isEqualTo("INVALID");
-        assertThat(scan(code, UUID.randomUUID().toString()).get("result").asText()).isEqualTo("WRONG_EVENT");
+        assertThat(scan(otherTicket, eventId).get("result").asText()).isEqualTo("INVALID");
+        assertThat(scan("SL1.T-made-up.1.123.AAAAAAAAAAAAAAAAAAAAAA", eventId).get("result").asText()).isEqualTo("INVALID");
+        assertThat(scan("hello", eventId).get("result").asText()).isEqualTo("INVALID");
+        String otherShow = newEvent();
+        addToDoorTeam(otherShow, doorEmail).andExpect(status().isCreated());
+        assertThat(scan(code, otherShow).get("result").asText()).isEqualTo("WRONG_EVENT");
     }
 
     @Test
@@ -160,5 +180,43 @@ class DoorFlowTest {
             }
         }
         assertThat(results).containsOnlyOnce("OK").filteredOn(r -> !r.equals("OK")).containsOnly("ALREADY_SCANNED");
+    }
+
+    @Test
+    void doorStaffScanOnlyAtTheEventsTheyreOnTheDoorTeamFor() throws Exception {
+        String code = qr(fan, tickets.get(0));
+        String stranger = testUsers.bearer(Role.DOOR_STAFF);
+        scanAs(stranger, code, eventId).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("not_on_door_team"));
+        // and a scan has to say which event it's at
+        scanAs(door, code, null).andExpect(status().isBadRequest());
+
+        JsonNode mine = body(call(HttpMethod.GET, "/door/events", door, null).andExpect(status().isOk()));
+        assertThat(mine).hasSize(1);
+        assertThat(mine.get(0).get("id").asText()).isEqualTo(eventId);
+        assertThat(body(call(HttpMethod.GET, "/door/events", stranger, null))).isEmpty();
+
+        // only door staff accounts can be added, only by the event's organizer
+        String fanEmail = "fan-" + UUID.randomUUID() + "@example.com";
+        testUsers.bearer(Role.FAN, fanEmail);
+        addToDoorTeam(eventId, fanEmail).andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("not_door_staff"));
+        addToDoorTeam(eventId, "nobody-" + UUID.randomUUID() + "@example.com").andExpect(status().isNotFound());
+        call(HttpMethod.POST, "/events/" + eventId + "/door-staff", testUsers.bearer(Role.ORGANIZER),
+                "{\"email\": \"" + doorEmail + "\"}").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("not_your_event"));
+
+        // taken off the team, they can't scan there any more
+        JsonNode team = body(call(HttpMethod.GET, "/events/" + eventId + "/door-staff", organizer, null));
+        assertThat(team).hasSize(1);
+        call(HttpMethod.DELETE, "/events/" + eventId + "/door-staff/" + team.get(0).get("id").asText(), organizer, null)
+                .andExpect(status().isNoContent());
+        scanAs(door, code, eventId).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aCancelledEventsTicketsAreTurnedAway() throws Exception {
+        String code = qr(fan, tickets.get(0));
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
+        assertThat(scan(code, eventId).get("result").asText()).isEqualTo("CANCELLED");
     }
 }

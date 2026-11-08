@@ -5,6 +5,10 @@ spring:
     url: ${SEATLINE_DB_URL:jdbc:postgresql://localhost:5432/seatline}
     username: ${SEATLINE_DB_USER:seatline}
     password: ${SEATLINE_DB_PASSWORD:seatline}
+    hikari:
+      maximum-pool-size: ${SEATLINE_DB_POOL:20}
+      # in a rush, tell the fan to try again after a few seconds rather than hang for 30
+      connection-timeout: 5000 # ms
   data:
     redis:
       url: ${SEATLINE_REDIS_URL:redis://localhost:6379}
@@ -15,6 +19,18 @@ spring:
   threads:
     virtual:
       enabled: true
+  # set only in a deployment: then OutboxSender sends the emails in the outbox
+  mail:
+    host: ${SEATLINE_SMTP_HOST:}
+    port: ${SEATLINE_SMTP_PORT:587}
+    username: ${SEATLINE_SMTP_USER:}
+    password: ${SEATLINE_SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
 
 server:
   # Behind the load balancer every request arrives from its address. "native" makes Tomcat take
@@ -26,12 +42,17 @@ server:
     include-stacktrace: never
 
 seatline:
-  # 32+ random bytes, base64. Required outside development; see SecurityConfig.
+  # true in a real deployment: missing secrets stop the API from starting instead of being made up
+  production: ${SEATLINE_PRODUCTION:false}
+  mail-from: ${SEATLINE_MAIL_FROM:Seatline <no-reply@localhost>}
+  # 32+ random bytes, base64. Required when production is true; see SecurityConfig.
   jwt-secret: ${SEATLINE_JWT_SECRET:}
   token-ttl: 1h
   # client ports of the seat ledger nodes
   ledger: ${SEATLINE_LEDGER:1=localhost:8001,2=localhost:8002,3=localhost:8003}
   ledger-timeout: 5s
+  # how long one read of an event's seat map is shared between fans polling it
+  seat-map-cache-ms: ${SEATLINE_SEAT_MAP_CACHE_MS:500}
   # the nodes' admin addresses (peer ports, nodes started with --admin) for the chaos panel;
   # leave unset to turn the panel off
   ledger-admin: ${SEATLINE_LEDGER_ADMIN:}

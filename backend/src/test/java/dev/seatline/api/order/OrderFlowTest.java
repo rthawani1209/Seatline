@@ -159,6 +159,98 @@ class OrderFlowTest {
     }
 
     @Test
+    void aHoldThatsBeenLetGoOrHasRunOutIsNeverCharged() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String released = body(hold(fan, null, "FLOOR-A-1")).get("holdId").asText();
+        call(HttpMethod.DELETE, "/holds/" + released, fan, null).andExpect(status().isNoContent());
+        checkout(fan, released, "tok_visa").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("no_such_hold"));
+
+        String ranOut = body(hold(fan, null, "FLOOR-A-2")).get("holdId").asText();
+        jdbc.update("update holds set expires_at = now() - interval '1 second' where id = ?", ranOut);
+        checkout(fan, ranOut, "tok_visa").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("hold_expired"));
+
+        assertThat(jdbc.queryForObject("select count(*) from payment_attempts where hold_id in (?, ?)", Long.class,
+                released, ranOut)).isZero();
+    }
+
+    @Test
+    void aFreeOrderNeverReachesTheCardProcessor() throws Exception {
+        String venue = body(call(HttpMethod.POST, "/venues", organizer, """
+                {"name": "Park", "city": "Davis", "sections": [{"name": "Lawn", "rows": [{"label": "A", "seats": 2}]}]}"""))
+                .get("id").asText();
+        String free = body(call(HttpMethod.POST, "/events", organizer, """
+                {"venueId": "%s", "name": "Free Show", "startsAt": "%s", "perFanLimit": 2,
+                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
+                 "tiers": [{"name": "Free", "kind": "STANDARD", "priceCents": 0, "sections": ["Lawn"]}]}"""
+                .formatted(venue, Instant.now().plus(30, ChronoUnit.DAYS)))).get("id").asText();
+        call(HttpMethod.POST, "/events/" + free + "/publish", organizer, "{}").andExpect(status().isNoContent());
+        String freeTier = body(mvc.perform(request(HttpMethod.GET, "/events/" + free))).get("tiers").get(0).get("id").asText();
+
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(call(HttpMethod.POST, "/events/" + free + "/holds", fan,
+                "{\"items\": [{\"seat\": \"LAWN-A-1\", \"tierId\": \"" + freeTier + "\"}]}")
+                .andExpect(status().isCreated())).get("holdId").asText();
+
+        // a card that would be declined doesn't matter: nothing is charged
+        JsonNode order = body(checkout(fan, holdId, "tok_declined").andExpect(status().isOk()));
+        assertThat(order.get("totalCents").asLong()).isZero();
+        assertThat(jdbc.queryForObject("select payment_ref from orders where hold_id = ?", String.class, holdId))
+                .startsWith("free_");
+
+        // and handing it back has nothing to refund, but still frees the seat
+        String ticket = order.get("tickets").get(0).get("id").asText();
+        call(HttpMethod.POST, "/tickets/" + ticket + "/return", fan, null).andExpect(status().isNoContent());
+        orders.reconcile();
+        assertThat(jdbc.queryForObject("select count(*) from refunds where state <> 'DONE' and payment_ref like 'free_%'",
+                Long.class)).isZero();
+    }
+
+    @Test
+    void cancellingAnEventRefundsEveryOrderInFullOnce() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        JsonNode first = body(checkout(fan, body(hold(fan, null, "FLOOR-A-1", "FLOOR-A-2")).get("holdId").asText(), "tok_visa")
+                .andExpect(status().isOk()));
+        // one of the two was already handed back (face value refunded, fees kept)
+        call(HttpMethod.POST, "/tickets/" + first.get("tickets").get(0).get("id").asText() + "/return", fan, null)
+                .andExpect(status().isNoContent());
+        String other = testUsers.bearer(Role.FAN);
+        JsonNode second = body(checkout(other, body(hold(other, "HALF", "FLOOR-A-3")).get("holdId").asText(), "tok_visa")
+                .andExpect(status().isOk()));
+        // and someone is halfway through checkout when it's called off
+        String late = testUsers.bearer(Role.FAN);
+        String openHold = body(hold(late, null, "FLOOR-A-4")).get("holdId").asText();
+
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", testUsers.bearer(Role.ORGANIZER), null)
+                .andExpect(status().isForbidden());
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("already_cancelled"));
+
+        for (JsonNode order : List.of(first, second)) {
+            String ref = jdbc.queryForObject("select payment_ref from orders where id = ?::uuid", String.class,
+                    order.get("id").asText());
+            assertThat(payments.refundedOn(ref)).isEqualTo(order.get("totalCents").asLong());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from tickets where event_id = ?::uuid and status = 'VALID'",
+                Long.class, eventId)).isZero();
+        assertThat(jdbc.queryForObject("""
+                select count(*) from outbox_emails where subject = 'Cancelled: Late Show'
+                and created_at > now() - interval '1 minute'""", Long.class)).isGreaterThanOrEqualTo(2);
+
+        checkout(late, openHold, "tok_visa").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("event_cancelled"));
+        hold(late, null, "FLOOR-A-5").andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("not_on_sale"));
+
+        // the reconciler running later doesn't refund anyone twice
+        orders.reconcile();
+        String ref = jdbc.queryForObject("select payment_ref from orders where id = ?::uuid", String.class,
+                first.get("id").asText());
+        assertThat(payments.refundedOn(ref)).isEqualTo(first.get("totalCents").asLong());
+    }
+
+    @Test
     void theOrganizerSeesLiveSalesForTheirEventOnly() throws Exception {
         String fan = testUsers.bearer(Role.FAN);
         String sold = body(hold(fan, null, "FLOOR-A-1", "FLOOR-A-2")).get("holdId").asText();
@@ -220,6 +312,37 @@ class OrderFlowTest {
         assertThat(results.get(1).get("id")).isEqualTo(results.get(0).get("id"));
         assertThat(jdbc.queryForObject("select count(*) from tickets where order_id = ?::uuid", Integer.class,
                 results.get(0).get("id").asText())).isEqualTo(1);
+    }
+
+    @Test
+    void tenClicksOnPayWithDifferentCardsChargeOnce() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-6")).get("holdId").asText();
+        List<Callable<JsonNode>> clicks = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            String card = i % 2 == 0 ? "tok_visa" : "tok_mastercard";
+            clicks.add(() -> body(checkout(fan, holdId, card).andExpect(status().isOk())));
+        }
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (Future<JsonNode> f : pool.invokeAll(clicks)) {
+                assertThat(f.get().get("tickets")).hasSize(1);
+            }
+        }
+        assertThat(jdbc.queryForObject("select count(*) from payment_attempts where hold_id = ?", Integer.class, holdId))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from refunds where id like ?", Integer.class, "%" + holdId + "%"))
+                .isZero();
+    }
+
+    @Test
+    void afterADeclineAnotherCardCanPayButMadeUpCardsCant() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-5")).get("holdId").asText();
+        checkout(fan, holdId, "tok_declined").andExpect(status().isPaymentRequired());
+        checkout(fan, holdId, "4242424242424242").andExpect(status().isPaymentRequired());
+        checkout(fan, holdId, "tok_visa").andExpect(status().isOk());
+        assertThat(jdbc.queryForList("select state from payment_attempts where hold_id = ? order by created_at",
+                String.class, holdId)).containsExactly("DECLINED", "DECLINED", "DONE");
     }
 
     /** Runs checkout with the process "dying" at one step, then lets the reconciler clean up. */
@@ -318,7 +441,7 @@ class OrderFlowTest {
         ledger.write(new SeatCommand.Release(holdId)); // as if it had expired
 
         checkout(fan, holdId, "tok_visa").andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("hold_expired"));
-        Payments.Charge charge = payments.charge(holdId + ":tok_visa", 0, "tok_visa", "");
+        Payments.Charge charge = payments.charge(holdId + ":1", 0, "tok_visa", "");
         assertThat(payments.refundedOn(charge.ref())).isEqualTo(h.get("quote").get("totalCents").asLong());
         assertThat(seatStatus("FLOOR-A-5")).isEqualTo("FREE");
     }
@@ -328,7 +451,7 @@ class OrderFlowTest {
         String fan = testUsers.bearer(Role.FAN);
         String holdId = body(hold(fan, null, "FLOOR-A-6")).get("holdId").asText();
         // first attempt: paid and confirmed in the ledger, then the API died before writing Postgres
-        Payments.Charge charge = payments.charge(holdId + ":tok_visa", 0, "tok_visa", "");
+        Payments.Charge charge = payments.charge(holdId + ":1", 0, "tok_visa", "");
         assertThat(ledger.write(new SeatCommand.Confirm(holdId, charge.ref())).ok()).isTrue();
 
         JsonNode order = body(checkout(fan, holdId, "tok_visa").andExpect(status().isOk()));
@@ -370,11 +493,32 @@ class OrderFlowTest {
         assertThat(ledger.ticket(first).orElseThrow().version()).isEqualTo(2); // old QR code is dead
         // it's not the sender's any more
         call(HttpMethod.POST, "/tickets/" + first + "/return", fan, null).andExpect(status().isNotFound());
+        // and the friend can't cash it in either: the refund would go to the buyer's card
+        call(HttpMethod.POST, "/tickets/" + first + "/return", friend, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("only_the_buyer_can_return"));
 
         call(HttpMethod.POST, "/tickets/" + second + "/return", fan, null).andExpect(status().isNoContent());
         assertThat(seatStatus("FLOOR-A-2")).isEqualTo("FREE");
         assertThat(body(call(HttpMethod.GET, "/me/tickets", fan, null))).isEmpty();
         String ref = jdbc.queryForObject("select payment_ref from orders where hold_id = ?", String.class, holdId);
         assertThat(payments.refundedOn(ref)).isEqualTo(tickets.get(1).get("priceCents").asLong());
+    }
+
+    @Test
+    void aTicketCantBeReturnedAfterItsScannedOrTheShowStarts() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-3", "FLOOR-A-4")).get("holdId").asText();
+        JsonNode tickets = body(checkout(fan, holdId, "tok_visa")).get("tickets");
+        String scanned = tickets.get(0).get("id").asText();
+        String other = tickets.get(1).get("id").asText();
+
+        jdbc.update("update tickets set scanned_at = now() where id = ?", scanned);
+        call(HttpMethod.POST, "/tickets/" + scanned + "/return", fan, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("too_late_to_return"));
+
+        jdbc.update("update events set starts_at = now() - interval '1 minute' where id = ?::uuid", eventId);
+        call(HttpMethod.POST, "/tickets/" + other + "/return", fan, null).andExpect(status().isConflict());
+        assertThat(seatStatus("FLOOR-A-3")).isEqualTo("SOLD");
+        assertThat(seatStatus("FLOOR-A-4")).isEqualTo("SOLD");
     }
 }

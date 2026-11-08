@@ -4,8 +4,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Sends account emails. For now they go to the outbox table, where development and tests read
- * them; a real sender (SES) picks them up from there in the deployment.
+ * Sends account and ticket emails by writing them to the outbox table, in the same transaction as
+ * whatever they're about. {@link OutboxSender} delivers them when SMTP is set up; in development
+ * and the tests they stay in the table to be read.
  */
 @Component
 public class Mailer {

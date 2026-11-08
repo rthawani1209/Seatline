@@ -94,14 +94,15 @@ public class OrderService {
     }
 
     public Hold hold(UUID eventId, CurrentUser fan, List<EventService.QuoteItem> items, String promo) {
-        if (!waitingRoom.mayBuy(events.get(eventId), fan.id())) {
+        EventService.Event event = events.get(eventId);
+        if (!waitingRoom.mayBuy(event, fan.id())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "wait_in_queue");
         }
         if (coolingDown(eventId, fan.id())) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "cooldown");
         }
         String email = accounts.get(fan.id()).email();
-        EventService.Quote quote = events.quote(eventId, items, promo, email);
+        EventService.Quote quote = events.quote(event, items, promo, email);
         List<String> wanted = quote.lines().stream().map(EventService.QuoteLine::seat).toList();
         String holdId = "h" + UUID.randomUUID().toString().replace("-", "");
 
@@ -176,13 +177,28 @@ public class OrderService {
             return done.get(); // a retry after the first answer got lost
         }
 
+        // One charge per hold, however many times Pay is pressed and with whatever card: every click
+        // joins the hold's current attempt, and a new attempt starts only after a decline.
+        String key = attemptKey(holdId);
+        boolean joining = db.sql("select count(*) from payment_attempts where idem_key = ?").param(key)
+                .query(Long.class).single() > 0;
+        // a hold that's been let go or has run out can't start a new charge (a retry of one already
+        // under way still goes through, so it gets finished or refunded like any other)
+        if (!joining && h.released()) {
+            throw new ApiException(HttpStatus.CONFLICT, "no_such_hold");
+        }
+        if (!joining && h.expired()) {
+            throw new ApiException(HttpStatus.CONFLICT, "hold_expired");
+        }
+        if (!joining && "CANCELLED".equals(events.get(h.eventId()).status())) {
+            throw new ApiException(HttpStatus.CONFLICT, "event_cancelled");
+        }
         // written down before any money moves; the reconciler finishes or refunds it if we die
-        String key = holdId + ":" + cardToken;
         db.sql("""
                 insert into payment_attempts (idem_key, hold_id, card_token, amount_cents, state)
                 values (?, ?, ?, ?, 'CHARGING') on conflict do nothing""")
                 .params(key, holdId, cardToken, h.totalCents()).update();
-        Payments.Charge charge = payments.charge(key, h.totalCents(), cardToken, "Seatline tickets");
+        Payments.Charge charge = charge(key, h.totalCents(), cardToken);
         if (!charge.approved()) {
             attemptState(key, "DECLINED", null);
             throw new ApiException(HttpStatus.PAYMENT_REQUIRED, "payment_declined");
@@ -207,7 +223,9 @@ public class OrderService {
         if (!confirmed) {
             queueRefund("attempt:" + key, paymentRef, h.totalCents(), "hold ended before payment");
             attemptState(key, "REFUNDED", paymentRef);
-            handBackPromo(h);
+            if (!paidByAnotherAttempt(h)) {
+                handBackPromo(h); // the code's use stays taken if the hold was bought after all
+            }
             sendRefunds();
             return null;
         }
@@ -258,6 +276,19 @@ public class OrderService {
     /** Hands a ticket back for its face value; the seat goes back on sale. */
     public void giveBack(String ticketId, CurrentUser fan) {
         TicketRow t = ticketOf(ticketId, fan);
+        record Returnable(boolean scanned, boolean started, boolean boughtByHolder) {}
+        Returnable when = db.sql("""
+                select t.scanned_at is not null, e.starts_at <= now(), o.fan_id = t.owner_id
+                from tickets t join orders o on o.id = t.order_id join events e on e.id = t.event_id
+                where t.id = ?""").param(ticketId)
+                .query((rs, n) -> new Returnable(rs.getBoolean(1), rs.getBoolean(2), rs.getBoolean(3))).single();
+        if (when.scanned() || when.started()) {
+            throw new ApiException(HttpStatus.CONFLICT, "too_late_to_return");
+        }
+        if (!when.boughtByHolder()) {
+            // the refund goes back to the card that paid, so only the buyer can hand a ticket back
+            throw new ApiException(HttpStatus.CONFLICT, "only_the_buyer_can_return");
+        }
         SeatResult r = seats.write(new SeatCommand.Return(ticketId, fan.id().toString()));
         if (!r.ok()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket");
@@ -267,6 +298,53 @@ public class OrderService {
             queueRefund("return:" + ticketId, t.paymentRef(), t.priceCents(), "ticket returned");
         });
         sendRefunds();
+    }
+
+    /**
+     * Calls off an event: it comes off sale, every ticket stops scanning, and every order is refunded
+     * in full (fees too), less anything already refunded for returned tickets. Ticket holders are
+     * emailed. Safe to run again: each order's refund is queued once.
+     */
+    public void cancelEvent(UUID eventId, CurrentUser by) {
+        EventService.Event e = events.requireOwner(eventId, by);
+        if (e.status().equals("CANCELLED")) {
+            throw new ApiException(HttpStatus.CONFLICT, "already_cancelled");
+        }
+        if (!e.startsAt().isAfter(Instant.now())) {
+            throw new ApiException(HttpStatus.CONFLICT, "event_started");
+        }
+        List<String> holders = tx.execute(status -> {
+            db.sql("update events set status = 'CANCELLED' where id = ?").param(eventId).update();
+            return refundCancelled(eventId);
+        });
+        for (String email : holders) {
+            mailer.send(email, "Cancelled: " + e.name(), """
+                    Sorry: %s has been cancelled.
+
+                    Your tickets have been refunded in full, fees included, to the card you paid with.
+                    Refunds usually show up within 5 to 10 business days.
+                    """.formatted(e.name()));
+        }
+        sendRefunds();
+    }
+
+    /** Cancels the event's live tickets and queues each order's refund. Returns who held them. */
+    private List<String> refundCancelled(UUID eventId) {
+        List<String> holders = db.sql("""
+                select distinct u.email from tickets t join users u on u.id = t.owner_id
+                where t.event_id = ? and t.status = 'VALID'""").param(eventId).query(String.class).list();
+        db.sql("update tickets set status = 'CANCELLED' where event_id = ? and status = 'VALID'").param(eventId).update();
+        record Owed(UUID orderId, String ref, long cents) {}
+        db.sql("""
+                select o.id, o.payment_ref,
+                       o.total_cents - coalesce((select sum(r.amount_cents) from refunds r
+                                                 where r.payment_ref = o.payment_ref), 0)
+                from orders o where o.event_id = ?""").param(eventId)
+                .query((rs, n) -> new Owed(rs.getObject(1, UUID.class), rs.getString(2), rs.getLong(3)))
+                .list()
+                .stream().filter(o -> o.cents() > 0)
+                .forEach(o -> queueRefund("cancel:" + o.orderId(), o.ref(), o.cents(), "event cancelled"));
+        return holders;
     }
 
     /** Frees holds whose time is up. Every API server sends it; doing it twice is harmless. */
@@ -314,24 +392,41 @@ public class OrderService {
                 select id, event_id, promo_code from holds h
                 where promo_code is not null and not promo_returned and expires_at < ?
                   and not exists (select 1 from orders o where o.hold_id = h.id)""").param(cutoff)
-                .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), null, 0, rs.getString(3)))
+                .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), null, 0, rs.getString(3),
+                        false, true))
                 .list()
                 .forEach(this::handBackPromo);
+
+        // a payment that was mid-flight when its event was cancelled can still land as an order;
+        // refund those too
+        db.sql("""
+                select distinct t.event_id from tickets t join events e on e.id = t.event_id
+                where e.status = 'CANCELLED' and t.status = 'VALID'""").query(UUID.class).list()
+                .forEach(eventId -> tx.executeWithoutResult(status -> refundCancelled(eventId)));
 
         sendRefunds();
     }
 
     // ---------------------------------------------------------------- internals
 
-    private record HoldRow(String id, UUID eventId, EventService.Quote quote, long totalCents, String promoCode) {}
+    private record HoldRow(String id, UUID eventId, EventService.Quote quote, long totalCents, String promoCode,
+                           boolean released, boolean expired) {}
+
+    /** A free order (say, a 100% promo with no fees) never reaches the card processor. */
+    private Payments.Charge charge(String key, long cents, String token) {
+        return cents == 0 ? new Payments.Charge(true, "free_" + key, null)
+                : payments.charge(key, cents, token, "Seatline tickets");
+    }
 
     private record TicketRow(String id, long priceCents, String paymentRef) {}
 
     private HoldRow holdOf(String holdId, CurrentUser fan) {
-        return db.sql("select id, event_id, quote, total_cents, promo_code from holds where id = ? and fan_id = ?")
+        return db.sql("""
+                        select id, event_id, quote, total_cents, promo_code, released_at is not null, expires_at <= now()
+                        from holds where id = ? and fan_id = ?""")
                 .params(holdId, fan.id())
                 .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), read(rs.getString(3)),
-                        rs.getLong(4), rs.getString(5)))
+                        rs.getLong(4), rs.getString(5), rs.getBoolean(6), rs.getBoolean(7)))
                 .optional()
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_hold"));
     }
@@ -346,20 +441,30 @@ public class OrderService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket"));
     }
 
-    /** True if one of this fan's holds for the event ran out unpaid in the last two minutes. */
+    /**
+     * True if one of this fan's holds for the event ended unpaid in the last two minutes: it ran
+     * out, or it was let go after sitting on the seats for more than half its time (otherwise
+     * letting go at 9:59 would dodge the wait). Letting seats go early never costs anything.
+     */
     private boolean coolingDown(UUID eventId, UUID fan) {
         return db.sql("""
                 select exists (select 1 from holds h
-                    where h.fan_id = ? and h.event_id = ? and h.released_at is null
-                      and h.expires_at <= now() and h.expires_at > now() - make_interval(secs => ?)
-                      and not exists (select 1 from orders o where o.hold_id = h.id))""")
-                .params(fan, eventId, COOLDOWN.toSeconds()).query(Boolean.class).single();
+                    where h.fan_id = ? and h.event_id = ?
+                      and not exists (select 1 from orders o where o.hold_id = h.id)
+                      and ((h.released_at is null and h.expires_at <= now()
+                            and h.expires_at > now() - make_interval(secs => ?))
+                        or (h.released_at > h.expires_at - make_interval(secs => ?)
+                            and h.released_at > now() - make_interval(secs => ?))))""")
+                .params(fan, eventId, COOLDOWN.toSeconds(), HOLD_TTL.toSeconds() / 2, COOLDOWN.toSeconds())
+                .query(Boolean.class).single();
     }
 
     private HoldRow holdRow(String holdId) {
-        return db.sql("select id, event_id, quote, total_cents, promo_code from holds where id = ?").param(holdId)
+        return db.sql("""
+                        select id, event_id, quote, total_cents, promo_code, released_at is not null, expires_at <= now()
+                        from holds where id = ?""").param(holdId)
                 .query((rs, n) -> new HoldRow(rs.getString(1), rs.getObject(2, UUID.class), read(rs.getString(3)),
-                        rs.getLong(4), rs.getString(5)))
+                        rs.getLong(4), rs.getString(5), rs.getBoolean(6), rs.getBoolean(7)))
                 .single();
     }
 
@@ -377,7 +482,7 @@ public class OrderService {
         HoldRow h = holdRow(holdId);
         if (state.equals("CHARGING")) {
             // we don't know if the charge went through; asking again with the same key tells us
-            Payments.Charge c = payments.charge(key, h.totalCents(), token, "Seatline tickets");
+            Payments.Charge c = charge(key, h.totalCents(), token);
             if (!c.approved()) {
                 attemptState(key, "DECLINED", null);
                 return;
@@ -401,7 +506,9 @@ public class OrderService {
                 .query((rs, n) -> new Refund(rs.getString(1), rs.getString(2), rs.getLong(3))).list();
         for (Refund r : pending) {
             try {
-                payments.refund(r.id(), r.ref(), r.cents());
+                if (r.cents() > 0) { // nothing to send back for a free ticket
+                    payments.refund(r.id(), r.ref(), r.cents());
+                }
                 db.sql("update refunds set state = 'DONE' where id = ?").param(r.id()).update();
             } catch (RuntimeException e) {
                 log.warn("refund {} failed, will retry: {}", r.id(), e.toString());
@@ -422,6 +529,20 @@ public class OrderService {
             db.sql("update promo_codes set used = used - 1 where event_id = ? and code = ? and used > 0")
                     .params(eventId, code).update();
         }
+    }
+
+    /** The hold's attempt that isn't a decline, or the next number after the declines. */
+    private String attemptKey(String holdId) {
+        record Attempt(String key, String state) {}
+        List<Attempt> attempts = db.sql("select idem_key, state from payment_attempts where hold_id = ? order by created_at")
+                .param(holdId).query((rs, n) -> new Attempt(rs.getString(1), rs.getString(2))).list();
+        return attempts.stream().filter(a -> !a.state().equals("DECLINED")).map(Attempt::key).findFirst()
+                .orElse(holdId + ":" + (attempts.size() + 1));
+    }
+
+    /** True if the ledger has the hold's tickets, whoever's payment they were confirmed with. */
+    private boolean paidByAnotherAttempt(HoldRow h) {
+        return seats.ticket(ticketId(h.id(), h.quote().lines().getFirst().seat())).isPresent();
     }
 
     /** True if an earlier checkout of this hold got as far as the ledger with this payment. */

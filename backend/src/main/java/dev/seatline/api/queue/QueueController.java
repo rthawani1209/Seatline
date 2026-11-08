@@ -1,6 +1,7 @@
 package dev.seatline.api.queue;
 
 import dev.seatline.api.web.CurrentUser;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,8 +21,8 @@ class QueueController {
     }
 
     @PostMapping("/events/{id}/queue")
-    WaitingRoom.Status join(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
-        return room.join(id, CurrentUser.of(jwt).id());
+    WaitingRoom.Status join(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt, HttpServletRequest http) {
+        return room.join(id, CurrentUser.of(jwt).id(), http.getRemoteAddr());
     }
 
     /** Polled by the waiting room page every few seconds. */

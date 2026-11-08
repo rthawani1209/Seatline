@@ -49,11 +49,16 @@ class RouteAccessTest {
         POLICY.put("POST /auth/register", null);
         POLICY.put("POST /auth/verify", null);
         POLICY.put("POST /auth/login", null);
+        POLICY.put("POST /auth/forgot", null);
+        POLICY.put("POST /auth/reset", null);
+        POLICY.put("POST /me/password", SIGNED_IN);
+        POLICY.put("POST /me/sign-out-everywhere", SIGNED_IN);
         POLICY.put("GET /me", SIGNED_IN);
         POLICY.put("POST /me/2fa/setup", SIGNED_IN);
         POLICY.put("POST /me/2fa/enable", SIGNED_IN);
         POLICY.put("POST /me/2fa/disable", SIGNED_IN);
         POLICY.put("PUT /admin/users/{id}/role", EnumSet.of(Role.ADMIN));
+        POLICY.put("GET /admin/users", EnumSet.of(Role.ADMIN));
         POLICY.put("POST /venues", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("GET /venues/{id}", null);
         POLICY.put("POST /events", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
@@ -63,6 +68,8 @@ class RouteAccessTest {
         POLICY.put("GET /events/{id}/best-seats", null);
         POLICY.put("POST /events/{id}/publish", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/promo-codes", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("GET /events/{id}/promo-codes", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("POST /events/{id}/cancel", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /events/{id}/quote", SIGNED_IN);
         POLICY.put("POST /events/{id}/holds", SIGNED_IN);
         POLICY.put("DELETE /holds/{id}", SIGNED_IN);
@@ -72,6 +79,10 @@ class RouteAccessTest {
         POLICY.put("GET /me/tickets", SIGNED_IN);
         POLICY.put("GET /me/tickets/{id}/qr", SIGNED_IN);
         POLICY.put("POST /scan", EnumSet.of(Role.DOOR_STAFF, Role.ADMIN));
+        POLICY.put("GET /door/events", EnumSet.of(Role.DOOR_STAFF, Role.ADMIN));
+        POLICY.put("GET /events/{id}/door-staff", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("POST /events/{id}/door-staff", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
+        POLICY.put("DELETE /events/{id}/door-staff/{userId}", EnumSet.of(Role.ORGANIZER, Role.ADMIN));
         POLICY.put("POST /tickets/{id}/transfer", SIGNED_IN);
         POLICY.put("POST /tickets/{id}/return", SIGNED_IN);
         POLICY.put("GET /holds/{id}", SIGNED_IN);
@@ -96,11 +107,11 @@ class RouteAccessTest {
 
     @Test
     void everyRoleGetsExactlyWhatThePolicySays() throws Exception {
-        Map<Role, String> tokenFor = new TreeMap<>();
+        Map<Role, UUID> userFor = new TreeMap<>();
         for (Role role : Role.values()) {
             User u = users.save(new User(role.name().toLowerCase() + "-" + UUID.randomUUID() + "@example.com",
                     "unused", "Test " + role, role));
-            tokenFor.put(role, tokens.issue(u).value());
+            userFor.put(role, u.id());
         }
 
         List<String> wrong = new ArrayList<>();
@@ -114,7 +125,8 @@ class RouteAccessTest {
                 wrong.add(route + " as nobody -> " + anonymous);
             }
             for (Role role : Role.values()) {
-                int status = call(route, tokenFor.get(role));
+                // a fresh token each time: some routes (sign out everywhere) end the old ones
+                int status = call(route, tokens.issue(users.findById(userFor.get(role)).orElseThrow()).value());
                 boolean shouldGetIn = allowed == null || allowed.contains(role);
                 boolean gotIn = status != 401 && status != 403;
                 if (shouldGetIn != gotIn) {

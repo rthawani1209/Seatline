@@ -3,6 +3,7 @@ package dev.seatline.api.security;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -51,18 +52,23 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .headers(h -> h.contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'; frame-ancestors 'none'")))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.POST, "/auth/register", "/auth/verify", "/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/register", "/auth/verify", "/auth/login",
+                                "/auth/forgot", "/auth/reset").permitAll()
                         .requestMatchers(HttpMethod.GET, "/me").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/me/2fa/setup", "/me/2fa/enable", "/me/2fa/disable").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/me/2fa/setup", "/me/2fa/enable", "/me/2fa/disable",
+                                "/me/password", "/me/sign-out-everywhere").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/admin/users/*/role").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/admin/users").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/admin/ledger").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/admin/ledger/*/crash", "/admin/ledger/*/revive",
                                 "/admin/ledger/*/cut-off", "/admin/ledger/heal").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/venues/*", "/events", "/events/*", "/events/*/seats", "/events/*/best-seats").permitAll()
                         .requestMatchers(HttpMethod.POST, "/venues", "/events").hasAnyRole("ORGANIZER", "ADMIN")
                         // ownership of the event is checked in EventService
-                        .requestMatchers(HttpMethod.POST, "/events/*/publish", "/events/*/promo-codes").hasAnyRole("ORGANIZER", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/organizer/events", "/events/*/stats").hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/events/*/publish", "/events/*/promo-codes", "/events/*/cancel")
+                        .hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/organizer/events", "/events/*/stats", "/events/*/promo-codes")
+                        .hasAnyRole("ORGANIZER", "ADMIN")
                         .requestMatchers(HttpMethod.POST, "/events/*/quote", "/events/*/holds", "/holds/*/checkout",
                                 "/tickets/*/transfer", "/tickets/*/return").authenticated()
                         .requestMatchers(HttpMethod.GET, "/holds/*").authenticated()
@@ -70,10 +76,32 @@ public class SecurityConfig {
                         .requestMatchers("/events/*/queue").authenticated()
                         .requestMatchers(HttpMethod.GET, "/me/tickets", "/me/tickets/*/qr").authenticated()
                         .requestMatchers(HttpMethod.POST, "/scan").hasAnyRole("DOOR_STAFF", "ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/door/events").hasAnyRole("DOOR_STAFF", "ADMIN")
+                        // ownership of the event is checked in DoorService
+                        .requestMatchers(HttpMethod.GET, "/events/*/door-staff").hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/events/*/door-staff").hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/events/*/door-staff/*").hasAnyRole("ORGANIZER", "ADMIN")
+                        // Spring's error page, so a 500 reaches the client as a 500 and not a 403
+                        .requestMatchers("/error").permitAll()
                         .anyRequest().denyAll())
-                .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken())))
+                .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken()))
+                        .authenticationEntryPoint(SecurityConfig::tokenProblem))
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
         return http.build();
+    }
+
+    /**
+     * A bad or revoked token is a 401. But if the token couldn't be checked at all (the database was
+     * too busy to look up its version), that's the server's problem: 503, so the app says "try again"
+     * instead of signing the fan out in the middle of a sale.
+     */
+    private static void tokenProblem(jakarta.servlet.http.HttpServletRequest req,
+                                     jakarta.servlet.http.HttpServletResponse res,
+                                     org.springframework.security.core.AuthenticationException e) throws java.io.IOException {
+        boolean busy = e instanceof org.springframework.security.authentication.AuthenticationServiceException;
+        res.setStatus(busy ? HttpStatus.SERVICE_UNAVAILABLE.value() : HttpStatus.UNAUTHORIZED.value());
+        res.setContentType("application/json");
+        res.getWriter().write(busy ? "{\"error\":\"try_again\"}" : "{\"error\":\"invalid_token\"}");
     }
 
     private static JwtAuthenticationConverter rolesFromToken() {
@@ -90,9 +118,13 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecretKey jwtKey(SeatlineSettings settings) {
+    SecretKey jwtKey(SeatlineSettings settings, @Value("${seatline.production:false}") boolean production) {
         byte[] bytes;
         if (settings.jwtSecret() == null || settings.jwtSecret().isBlank()) {
+            if (production) {
+                // a random key would sign everyone out and change every ticket's QR key on each restart
+                throw new IllegalStateException("SEATLINE_JWT_SECRET is required in production");
+            }
             log.warn("SEATLINE_JWT_SECRET is not set; using a random key, so tokens won't survive a restart");
             bytes = new byte[32];
             new SecureRandom().nextBytes(bytes);

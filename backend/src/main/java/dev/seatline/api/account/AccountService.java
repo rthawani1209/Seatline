@@ -25,6 +25,7 @@ import java.util.UUID;
 public class AccountService {
 
     private static final Duration VERIFY_TTL = Duration.ofHours(24);
+    private static final Duration RESET_TTL = Duration.ofHours(1);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UserRepository users;
@@ -88,13 +89,12 @@ public class AccountService {
     @Transactional
     public TokenService.Token login(String email, String password, String code, String address) {
         String normalized = normalize(email);
-        if (!limiter.allowed(normalized, address)) {
+        if (!limiter.tryAttempt(normalized, address)) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
         }
         User user = users.findByEmail(normalized).orElse(null);
         boolean passwordOk = passwords.matches(password, user != null ? user.passwordHash() : dummyHash);
         if (user == null || !passwordOk) {
-            limiter.failed(normalized, address);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "bad_credentials");
         }
         if (user.twoFactorEnabled()) {
@@ -102,16 +102,14 @@ public class AccountService {
                 throw new ApiException(HttpStatus.UNAUTHORIZED, "code_required");
             }
             long step = Totp.match(user.totpSecret(), code, clock);
-            if (step < 0 || step <= user.totpLastStep()) {
-                limiter.failed(normalized, address);
+            if (step < 0 || !useStep(user.id(), step)) {
                 throw new ApiException(HttpStatus.UNAUTHORIZED, "bad_code");
             }
-            user.setTotpLastStep(step);
         }
         if (!user.emailVerified()) {
             throw new ApiException(HttpStatus.FORBIDDEN, "email_not_verified");
         }
-        limiter.succeeded(normalized);
+        limiter.succeeded(normalized, address);
         return tokens.issue(user);
     }
 
@@ -144,14 +142,82 @@ public class AccountService {
         user.confirmTotp(step);
     }
 
+    /** Turning it off signs out every other session; this one carries on with the token returned. */
     @Transactional
-    public void disableTwoFactor(UUID userId, String code) {
+    public TokenService.Token disableTwoFactor(UUID userId, String code) {
         User user = get(userId);
         long step = user.twoFactorEnabled() ? Totp.match(user.totpSecret(), code, clock) : -1;
-        if (step < 0 || step <= user.totpLastStep()) {
+        if (step < 0 || !useStep(user.id(), step)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "bad_code");
         }
         user.disableTotp();
+        users.flush();
+        return tokens.issue(user);
+    }
+
+    /**
+     * Marks a two-factor code's time step as used. One conditional update, so when the same code
+     * arrives in several requests at once only one of them gets through.
+     */
+    private boolean useStep(UUID userId, long step) {
+        return jdbc.update("update users set totp_last_step = ? where id = ? and totp_last_step < ?", step, userId, step) == 1;
+    }
+
+    /** Needs the current password; returns a fresh token, since every older one stops working. */
+    @Transactional
+    public TokenService.Token changePassword(UUID userId, String current, String next, String address) {
+        User user = get(userId);
+        if (!limiter.tryAttempt(user.email(), address)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
+        }
+        if (!passwords.matches(current, user.passwordHash())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "wrong_password");
+        }
+        limiter.succeeded(user.email(), address);
+        user.changePassword(passwords.encode(next));
+        users.flush();
+        return tokens.issue(user);
+    }
+
+    @Transactional
+    public void signOutEverywhere(UUID userId) {
+        get(userId).signOutEverywhere();
+    }
+
+    /**
+     * Emails a reset link if the address has an account. Answers the same either way, so it can't
+     * be used to find out who has one. Counted like a sign-in attempt, to stop inbox flooding.
+     */
+    @Transactional
+    public void forgotPassword(String email, String address) {
+        String normalized = normalize(email);
+        if (!limiter.tryAttempt(normalized, address)) {
+            return;
+        }
+        users.findByEmail(normalized).ifPresent(user -> {
+            String token = randomToken();
+            jdbc.update("insert into password_resets (token_hash, user_id, expires_at) values (?, ?, ?)",
+                    sha256(token), user.id(), Timestamp.from(clock.instant().plus(RESET_TTL)));
+            mailer.send(normalized, "Reset your Seatline password",
+                    "Someone (hopefully you) asked to reset your Seatline password.\n"
+                            + "Open " + publicUrl + "/reset?token=" + token + "\n"
+                            + "It works for one hour. If it wasn't you, ignore this email.");
+        });
+    }
+
+    /** Sets a new password from a reset link. Signs out every session; proves the inbox too. */
+    @Transactional
+    public void resetPassword(String token, String next) {
+        var rows = jdbc.queryForList(
+                "delete from password_resets where token_hash = ? and expires_at > ? returning user_id",
+                UUID.class, sha256(token), Timestamp.from(clock.instant()));
+        if (rows.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_or_expired_token");
+        }
+        User user = get(rows.getFirst());
+        user.changePassword(passwords.encode(next));
+        user.markEmailVerified();
+        jdbc.update("delete from password_resets where user_id = ?", user.id()); // older links too
     }
 
     @Transactional

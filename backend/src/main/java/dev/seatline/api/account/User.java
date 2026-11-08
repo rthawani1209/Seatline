@@ -95,6 +95,16 @@ public class User {
         return emailVerified;
     }
 
+    /** A new password signs out every other session. */
+    public void changePassword(String newHash) {
+        this.passwordHash = newHash;
+        tokenVersion++;
+    }
+
+    public void signOutEverywhere() {
+        tokenVersion++;
+    }
+
     public void markEmailVerified() {
         this.emailVerified = true;
     }
@@ -131,9 +141,5 @@ public class User {
 
     public long totpLastStep() {
         return totpLastStep;
-    }
-
-    public void setTotpLastStep(long step) {
-        this.totpLastStep = step;
     }
 }
