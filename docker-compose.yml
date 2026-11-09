@@ -1,5 +1,6 @@
-# The whole of Seatline on one machine: five ledger nodes with mutual TLS, the API, Postgres,
-# Redis and the web app.
+# The whole of Seatline on one machine, for development and the browser tests: five ledger nodes
+# with mutual TLS, the API, Postgres, Redis and the web app. Not for production: ports are open,
+# there's no HTTPS and the demo controls are on. deploy/docker-compose.prod.yml is the real thing.
 #
 #   docker compose up --build        then open http://localhost:3000
 #

@@ -133,7 +133,7 @@ export function explain(e: unknown): string {
     not_on_door_team: "You're not on the door team for this event. Ask the organizer to add you.",
     cant_change_own_role: "You can't change your own role. Ask another admin.",
     already_cancelled: "This event is already cancelled.",
-    event_cancelled: "This event has been cancelled, so it can't be paid for. Nothing was charged.",
+    event_cancelled: "This event has been cancelled. Anything paid toward it has been refunded in full.",
     not_door_staff: "That account isn't a door staff account. An admin can make it one.",
   };
   if (words[code]) return words[code];

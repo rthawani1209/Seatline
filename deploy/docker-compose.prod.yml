@@ -111,8 +111,10 @@ services:
       SEATLINE_SMTP_USER: ${SEATLINE_SMTP_USER:-}
       SEATLINE_SMTP_PASSWORD: ${SEATLINE_SMTP_PASSWORD:-}
       SEATLINE_MAIL_FROM: ${SEATLINE_MAIL_FROM:-}
+      SEATLINE_ADMIN_EMAIL: ${SEATLINE_ADMIN_EMAIL:-}
     volumes: [ "./secrets/api:/tls:ro" ]
-    networks: [app, ledger]
+    # outbound: the one way out to the internet, for sending email (and, later, the card processor)
+    networks: [app, ledger, outbound]
 
   web:
     build:
@@ -139,6 +141,7 @@ services:
 
 networks:
   edge:
+  outbound:
   app:
     internal: true
   ledger:

@@ -1,57 +1,80 @@
 # Deploying Seatline
 
 Seatline runs on one Linux server with Docker: five ledger nodes, the API, the web app, Postgres,
-Redis, and Caddy in front for HTTPS. `setup.sh` does the work; these are the steps around it, using
-AWS EC2 as the example. Any Linux server with Docker works the same way.
+Redis, and Caddy in front for HTTPS. `setup.sh` does the work. These are the steps around it, using
+AWS EC2 as the example; any Linux server with Docker works the same way.
 
 What you need:
 
-- a server with **8 GB of memory** and 2 CPUs (on AWS, a `t3.large`). The five ledger nodes and
-  the API are capped at 640 MB and 1 GB (`mem_limit` in `docker-compose.prod.yml`), about 4.2 GB in
-  all; the rest is for Postgres, Redis, the web app, the OS and building the images.
-- a domain name you can add a DNS record to.
-- an SMTP account for sign-up and password-reset emails (Amazon SES works; so does Resend or any
-  other).
+- a server with **8 GB of memory** and 2 CPUs. On AWS that's an `m7i-flex.large`, which the Free
+  plan allows. The five ledger nodes and the API are capped at 640 MB and 1 GB (`mem_limit` in
+  `docker-compose.prod.yml`), about 4.2 GB in all. The rest is for Postgres, Redis, the web app, the
+  OS and building the images. A 4 GB machine is too small.
+- a name for the site. Without a domain, `SEATLINE_DOMAIN=auto` uses `<the server's IP>.sslip.io`,
+  a free name that points at the IP inside it. Some home and school networks block sslip.io; a
+  domain of your own (the GitHub Student Pack includes one) avoids that.
+- an SMTP account for sign-up and password-reset emails. A Gmail app password works and is free,
+  and so do Amazon SES and Resend.
 
 Payments are still the test stand-in: only the test cards on the checkout page go through and no
 real money moves. Real card payments need a Stripe account wired into `backend/.../payment/`.
 
-## 1. Start a server
+## 1. Start a server (AWS console, about 5 minutes of clicking)
 
-In the EC2 console, **Launch instance**:
+1. Sign in to the AWS console, pick your region at the top right (e.g. *US West (Oregon)*), open
+   **EC2** and click **Launch instance**.
+2. **Name**: `seatline`.
+3. **Application and OS Images**: *Ubuntu*, then **Ubuntu Server 24.04 LTS**, 64-bit (x86).
+4. **Instance type**: `m7i-flex.large`.
+5. **Key pair**: *Create new key pair*, name it `seatline`, and keep the `.pem` file it downloads.
+6. **Network settings**: keep *Allow SSH traffic from Anywhere* (the in-browser terminal, EC2
+   Instance Connect, comes in that way; signing in still needs a key, never a password), and tick
+   **Allow HTTPS traffic from the internet** and **Allow HTTP traffic from the internet**. Caddy
+   needs port 80 to get the certificate.
+7. **Configure storage**: 30 GiB, gp3.
+8. **Advanced details → User data**: paste all of [`aws-user-data.sh`](aws-user-data.sh), then fill
+   in the lines at the top: your email as `ADMIN_EMAIL`, and the Gmail lines if you have an app
+   password (they can be added later, see step 5).
+9. **Launch instance**.
 
-- **AMI**: Ubuntu Server 24.04 LTS (64-bit x86).
-- **Instance type**: `t3.large`.
-- **Key pair**: create one and keep the `.pem` file; it's how you SSH in.
-- **Network settings → security group**: allow SSH (22) from *My IP* only, and HTTP (80) and
-  HTTPS (443) from anywhere. Caddy needs port 80 to get the certificate.
-- **Storage**: 30 GB gp3.
+**Keep the address (optional, recommended).** Under **Elastic IPs → Allocate Elastic IP address →
+Allocate**, then **Actions → Associate**, pick the `seatline` instance, then on the instance
+**Instance state → Reboot**. Without this the IP, and so the sslip.io address, changes whenever the
+instance is stopped and started. The site follows the new IP by itself, but old links stop working.
 
-Then **Elastic IPs → Allocate**, and associate it with the instance, so the address survives a
-restart.
+## 2. Wait, then open the site
 
-## 2. Point the domain at it
+The first boot installs Docker, gets the code and builds everything: 10 to 15 minutes. The site is
+at `https://<the instance's Public IPv4 address>.sslip.io` (the IP is on the instance's page).
 
-At your DNS provider add an **A record**, e.g. `tickets.example.com → <the Elastic IP>`. Wait until
-`dig +short tickets.example.com` prints the IP; Caddy can't get a certificate before then.
+To watch progress, connect to the instance (on its page, **Connect → EC2 Instance Connect →
+Connect** opens a terminal in the browser) and run `tail -f /var/log/seatline-setup.log`. It ends
+with "Seatline setup finished".
 
-## 3. Install Docker and get the code
+## 3. The first admin
+
+Sign up on the site with the `ADMIN_EMAIL` address and confirm the email. That account becomes the
+admin. From then on the **Admin** page makes organizers and door staff, and organizers add door
+staff to each event's door team on the event page.
+
+Without email set up yet, confirm the account by hand in the instance's terminal:
 
 ```
-ssh -i seatline.pem ubuntu@tickets.example.com
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu && exit     # log in again so the group applies
-ssh -i seatline.pem ubuntu@tickets.example.com
-git clone https://github.com/rthawani1209/Seatline.git && cd Seatline
+cd ~/Seatline/deploy
+sudo docker compose -f docker-compose.prod.yml --env-file .env exec postgres \
+  psql -U seatline -c "update users set email_verified = true, role = 'ADMIN' where email = 'you@example.com'"
 ```
 
-## 4. Run setup
+## 4. Using your own domain later
 
-```
-SEATLINE_DOMAIN=tickets.example.com deploy/setup.sh
-```
+Add an **A record** at your DNS provider, e.g. `tickets.example.com → <the Elastic IP>`. Wait until
+`dig +short tickets.example.com` prints the IP, then on the server set
+`SEATLINE_DOMAIN=tickets.example.com` and `SEATLINE_AUTO_DOMAIN=false` in `deploy/.env` and run
+`sudo deploy/setup.sh`.
 
-The first run:
+**Without the user-data script** (another cloud, or by hand): install Docker
+(`curl -fsSL https://get.docker.com | sudo sh`), clone the repo, and run
+`SEATLINE_DOMAIN=tickets.example.com deploy/setup.sh` (or `SEATLINE_DOMAIN=auto`). The first run:
 
 1. writes `deploy/.env` with random passwords for Postgres and Redis and a random token-signing
    key (file mode 600);
@@ -63,39 +86,26 @@ The first run:
 Both `deploy/.env` and `deploy/secrets/` are git-ignored. Keep a copy of `.env` somewhere safe:
 without it the database password and signed-in sessions are lost.
 
-The first build takes several minutes. Then open `https://tickets.example.com`.
-
 ## 5. Email
 
-Fill in the `SEATLINE_SMTP_*` lines and `SEATLINE_MAIL_FROM` in `deploy/.env` and run
-`deploy/setup.sh` again. With Amazon SES:
+Fill in the `SEATLINE_SMTP_*` lines and `SEATLINE_MAIL_FROM` in `deploy/.env` (in the instance's
+terminal: `nano ~/Seatline/deploy/.env`) and run `sudo ~/Seatline/deploy/setup.sh`.
 
-- verify the domain (or a sender address) under **SES → Identities**;
-- create SMTP credentials under **SES → SMTP settings**; the host is
-  `email-smtp.<region>.amazonaws.com`, port 587;
-- a new SES account is in the *sandbox* and only sends to verified addresses. Request production
-  access before real fans sign up.
+- **Gmail** (free, fine for a demo): turn on 2-Step Verification, make an app password at
+  https://myaccount.google.com/apppasswords, then host `smtp.gmail.com`, port 587, your Gmail
+  address as user and as the from address, and the app password without its spaces.
+- **Amazon SES**: verify the domain (or a sender address) under **SES → Identities**, and create
+  SMTP credentials under **SES → SMTP settings**. The host is `email-smtp.<region>.amazonaws.com`,
+  port 587. A new SES account is in the *sandbox* and only sends to verified addresses, so request
+  production access before real fans sign up.
 
 Until SMTP is set, emails wait in the `outbox_emails` table and nothing is sent; they go out once
 it's configured.
 
-## 6. The first admin
-
-Every new account is a fan. Make your own account an admin once, straight in the database:
-
-```
-cd deploy
-docker compose -f docker-compose.prod.yml --env-file .env exec postgres \
-  psql -U seatline -c "update users set role = 'ADMIN' where email = 'you@example.com'"
-```
-
-Sign in again. From then on the **Admin** page makes organizers and door staff, and organizers add
-door staff to each event's door team on the event page.
-
 ## Updating
 
 ```
-cd ~/Seatline && git pull && deploy/setup.sh
+cd ~/Seatline && git pull && sudo deploy/setup.sh
 ```
 
 `setup.sh` keeps the existing `.env` and certificates and only rebuilds and restarts. Database

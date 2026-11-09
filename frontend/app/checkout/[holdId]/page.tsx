@@ -76,8 +76,16 @@ export default function CheckoutPage() {
     setBusy("release");
     try {
       await api(`/holds/${holdId}`, { method: "DELETE" });
-    } catch {
-      // already gone; the seats are free either way
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "already_paid") {
+        // paid in another tab: there's nothing to let go, so show where it stands instead
+        forgetHold(holdId);
+        setHold(await api<SavedHold>(`/holds/${holdId}`).catch(() => hold));
+        setError(explain(e));
+        setBusy(null);
+        return;
+      }
+      // otherwise it's already gone; the seats are free either way
     }
     forgetHold(holdId);
     router.push(hold ? `/events/${hold.eventId}` : "/");
