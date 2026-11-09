@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@SpringBootTest(properties = "seatline.admin-email=Owner@Example.com")
 @AutoConfigureMockMvc
 @Import({TestDatabase.class, TestLedger.class})
 class AccountFlowTest {
@@ -69,6 +69,18 @@ class AccountFlowTest {
     String token(ResultActions login) throws Exception {
         JsonNode body = json.readTree(login.andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
         return body.get("token").asText();
+    }
+
+    @Test
+    void theSiteOwnersAccountBecomesAdminOnceItsEmailIsConfirmed() throws Exception {
+        register("owner@example.com", PASSWORD).andExpect(status().isCreated());
+        assertThat(users.findByEmail("owner@example.com").orElseThrow().role()).isEqualTo(Role.FAN);
+        postJson("/auth/verify", "{\"token\": \"" + verificationToken("owner@example.com") + "\"}").andExpect(status().isNoContent());
+        String token = token(login("owner@example.com", PASSWORD, null));
+        mvc.perform(get("/me").header("Authorization", "Bearer " + token)).andExpect(jsonPath("$.role").value("ADMIN"));
+        // anyone else stays a fan
+        String fan = signUp(email());
+        mvc.perform(get("/me").header("Authorization", "Bearer " + fan)).andExpect(jsonPath("$.role").value("FAN"));
     }
 
     @Test

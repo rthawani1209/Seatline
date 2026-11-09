@@ -3,6 +3,7 @@ package dev.seatline.api.account;
 import dev.seatline.api.security.SeatlineSettings;
 import dev.seatline.api.security.TokenService;
 import dev.seatline.api.web.ApiException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -36,11 +37,13 @@ public class AccountService {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final String publicUrl;
+    private final String adminEmail;
     // hashed once at startup so a login for an unknown email costs as much as a real one
     private final String dummyHash;
 
     public AccountService(UserRepository users, PasswordEncoder passwords, TokenService tokens, LoginLimiter limiter,
-                          Mailer mailer, JdbcTemplate jdbc, Clock clock, SeatlineSettings settings) {
+                          Mailer mailer, JdbcTemplate jdbc, Clock clock, SeatlineSettings settings,
+                          @Value("${seatline.admin-email:}") String adminEmail) {
         this.users = users;
         this.passwords = passwords;
         this.tokens = tokens;
@@ -50,9 +53,13 @@ public class AccountService {
         this.clock = clock;
         this.publicUrl = settings.publicUrl() == null ? "http://localhost:3000" : settings.publicUrl().replaceAll("/+$", "");
         this.dummyHash = passwords.encode("not a real password");
+        this.adminEmail = adminEmail == null || adminEmail.isBlank() ? null : normalize(adminEmail);
     }
 
-    /** New accounts are always fans; an admin promotes organizers and door staff. */
+    /**
+     * New accounts are fans (or, for SEATLINE_ADMIN_EMAIL, an admin once confirmed); an admin
+     * promotes organizers and door staff.
+     */
     @Transactional
     public User register(String email, String password, String displayName) {
         String normalized = normalize(email);
@@ -79,7 +86,14 @@ public class AccountService {
         if (rows.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_or_expired_token");
         }
-        users.findById(rows.getFirst()).ifPresent(User::markEmailVerified);
+        users.findById(rows.getFirst()).ifPresent(user -> {
+            user.markEmailVerified();
+            // the site owner's own account becomes the first admin once they've proved the inbox,
+            // so a new server needs no database commands
+            if (user.email().equals(adminEmail)) {
+                user.setRole(Role.ADMIN);
+            }
+        });
     }
 
     /**
@@ -144,12 +158,16 @@ public class AccountService {
 
     /** Turning it off signs out every other session; this one carries on with the token returned. */
     @Transactional
-    public TokenService.Token disableTwoFactor(UUID userId, String code) {
+    public TokenService.Token disableTwoFactor(UUID userId, String code, String address) {
         User user = get(userId);
+        if (!limiter.tryAttempt(user.email(), address)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
+        }
         long step = user.twoFactorEnabled() ? Totp.match(user.totpSecret(), code, clock) : -1;
         if (step < 0 || !useStep(user.id(), step)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "bad_code");
         }
+        limiter.succeeded(user.email(), address);
         user.disableTotp();
         users.flush();
         return tokens.issue(user);
@@ -186,12 +204,13 @@ public class AccountService {
 
     /**
      * Emails a reset link if the address has an account. Answers the same either way, so it can't
-     * be used to find out who has one. Counted like a sign-in attempt, to stop inbox flooding.
+     * be used to find out who has one. A few per hour at most, to stop inbox flooding; it doesn't
+     * count against signing in.
      */
     @Transactional
     public void forgotPassword(String email, String address) {
         String normalized = normalize(email);
-        if (!limiter.tryAttempt(normalized, address)) {
+        if (!limiter.tryResetEmail(normalized, address)) {
             return;
         }
         users.findByEmail(normalized).ifPresent(user -> {

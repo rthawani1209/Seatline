@@ -260,7 +260,9 @@ public class EventService {
 
     @Transactional
     public void addPromo(UUID eventId, CurrentUser by, String code, int percentOff, int maxUses, Instant expiresAt) {
-        requireOwner(eventId, by);
+        if (requireOwner(eventId, by).status().equals("CANCELLED")) {
+            throw new ApiException(HttpStatus.CONFLICT, "event_cancelled");
+        }
         int inserted = db.sql("""
                 insert into promo_codes (id, event_id, code, percent_off, max_uses, expires_at)
                 values (?, ?, ?, ?, ?, ?) on conflict (event_id, code) do nothing""")

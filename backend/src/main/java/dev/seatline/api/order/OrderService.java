@@ -210,6 +210,10 @@ public class OrderService {
         if (order == null) {
             throw new ApiException(HttpStatus.CONFLICT, "hold_expired");
         }
+        if ("CANCELLED".equals(events.get(h.eventId()).status())) {
+            sendRefunds();
+            throw new ApiException(HttpStatus.CONFLICT, "event_cancelled");
+        }
         return order;
     }
 
@@ -289,15 +293,33 @@ public class OrderService {
             // the refund goes back to the card that paid, so only the buyer can hand a ticket back
             throw new ApiException(HttpStatus.CONFLICT, "only_the_buyer_can_return");
         }
-        SeatResult r = seats.write(new SeatCommand.Return(ticketId, fan.id().toString()));
-        if (!r.ok()) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket");
-        }
-        tx.executeWithoutResult(status -> {
-            db.sql("update tickets set status = 'RETURNED' where id = ?").param(ticketId).update();
-            queueRefund("return:" + ticketId, t.paymentRef(), t.priceCents(), "ticket returned");
+        // Claim the ticket in Postgres first. Locking the order keeps an event cancel from working
+        // out the order's refund at the same time, and the update only matches a ticket that is
+        // still valid and unscanned, so a scan or a cancel that got there first wins.
+        boolean claimed = tx.execute(status -> {
+            db.sql("select id from orders where id = (select order_id from tickets where id = ?) for update")
+                    .param(ticketId).query(UUID.class).single();
+            int n = db.sql("update tickets set status = 'RETURNED' where id = ? and status = 'VALID' and scanned_at is null")
+                    .param(ticketId).update();
+            if (n == 1) {
+                queueRefund("return:" + ticketId, t.paymentRef(), t.priceCents(), "ticket returned");
+            }
+            return n == 1;
         });
+        if (!claimed) {
+            throw new ApiException(HttpStatus.CONFLICT, "too_late_to_return");
+        }
         sendRefunds();
+        // then put the seat back on sale. If the ledger can't do it now the seat just stays unsold;
+        // the door already refuses the ticket because Postgres says it was returned.
+        try {
+            SeatResult r = seats.write(new SeatCommand.Return(ticketId, fan.id().toString()));
+            if (!r.ok()) {
+                log.warn("ticket {} was returned but the ledger said {}", ticketId, r.outcome());
+            }
+        } catch (RuntimeException e) {
+            log.warn("ticket {} was returned but its seat couldn't go back on sale: {}", ticketId, e.toString());
+        }
     }
 
     /**
@@ -330,9 +352,15 @@ public class OrderService {
 
     /** Cancels the event's live tickets and queues each order's refund. Returns who held them. */
     private List<String> refundCancelled(UUID eventId) {
+        // lock the orders first, the same way a return does, so the two can't both refund a ticket
+        db.sql("select id from orders where event_id = ? order by id for update").param(eventId).query(UUID.class).list();
+        // whoever holds a live ticket, and whoever paid for it (the refund goes to their card)
         List<String> holders = db.sql("""
-                select distinct u.email from tickets t join users u on u.id = t.owner_id
-                where t.event_id = ? and t.status = 'VALID'""").param(eventId).query(String.class).list();
+                select u.email from tickets t join users u on u.id = t.owner_id
+                where t.event_id = ? and t.status = 'VALID'
+                union
+                select u.email from tickets t join orders o on o.id = t.order_id join users u on u.id = o.fan_id
+                where t.event_id = ? and t.status = 'VALID'""").params(eventId, eventId).query(String.class).list();
         db.sql("update tickets set status = 'CANCELLED' where event_id = ? and status = 'VALID'").param(eventId).update();
         record Owed(UUID orderId, String ref, long cents) {}
         db.sql("""
@@ -553,6 +581,9 @@ public class OrderService {
 
     private Order saveOrder(HoldRow h, String paymentRef) {
         UUID orderId = UUID.randomUUID();
+        // a cancel changes this row, so this waits for one that's under way and then sees it
+        boolean cancelled = db.sql("select status = 'CANCELLED' from events where id = ? for share")
+                .param(h.eventId()).query(Boolean.class).single();
         UUID fan = db.sql("select fan_id from holds where id = ?").param(h.id()).query(UUID.class).single();
         db.sql("insert into orders (id, hold_id, event_id, fan_id, total_cents, payment_ref) values (?, ?, ?, ?, ?, ?)")
                 .params(orderId, h.id(), h.eventId(), fan, h.totalCents(), paymentRef).update();
@@ -565,6 +596,21 @@ public class OrderService {
                     .update();
         }
         Order order = orderForHold(h.id()).orElseThrow();
+        if (cancelled) {
+            // paid while the event was being called off: refund it now and say so, not "here are your tickets"
+            db.sql("update tickets set status = 'CANCELLED' where order_id = ?").param(orderId).update();
+            if (h.totalCents() > 0) {
+                queueRefund("cancel:" + orderId, paymentRef, h.totalCents(), "event cancelled");
+            }
+            String name = order.tickets().getFirst().eventName();
+            mailer.send(accounts.get(fan).email(), "Cancelled: " + name, """
+                    Sorry: %s was cancelled while your payment went through.
+
+                    Your payment has been refunded in full to the card you paid with.
+                    Refunds usually show up within 5 to 10 business days.
+                    """.formatted(name));
+            return order;
+        }
         StringBuilder body = new StringBuilder("Your tickets for " + order.tickets().getFirst().eventName() + ":\n");
         order.tickets().forEach(t -> body.append("  ").append(t.seat()).append(" (").append(t.tier()).append(")\n"));
         body.append(String.format("Total charged: $%d.%02d%n", order.totalCents() / 100, order.totalCents() % 100));

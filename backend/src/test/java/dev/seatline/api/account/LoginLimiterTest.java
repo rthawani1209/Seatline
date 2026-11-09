@@ -66,6 +66,52 @@ class LoginLimiterTest {
     }
 
     @Test
+    void hammeringAwayDoesntKeepTheLimitGoing() {
+        TestClock clock = new TestClock();
+        LoginLimiter limiter = new LoginLimiter(clock);
+        for (int i = 0; i < LoginLimiter.MAX_PER_ADDRESS_AND_ACCOUNT; i++) {
+            limiter.tryAttempt("jo@example.com", "203.0.113.9");
+        }
+        // refused attempts all through the window aren't counted...
+        for (int minute = 0; minute < 15; minute++) {
+            clock.now = clock.now.plusSeconds(60);
+            assertThat(limiter.tryAttempt("jo@example.com", "203.0.113.9")).isFalse();
+        }
+        // ...so it still ends 15 minutes after the last one let through
+        clock.now = clock.now.plusSeconds(1);
+        assertThat(limiter.tryAttempt("jo@example.com", "203.0.113.9")).isTrue();
+    }
+
+    @Test
+    void aStrangerWithManyAddressesCantKeepTheOwnerOut() {
+        LoginLimiter limiter = new LoginLimiter(new TestClock());
+        assertThat(limiter.tryAttempt("jo@example.com", "198.51.100.7")).isTrue();
+        limiter.succeeded("jo@example.com", "198.51.100.7"); // Jo signs in from home
+
+        for (int i = 0; i < LoginLimiter.MAX_PER_ACCOUNT * 3; i++) {
+            limiter.tryAttempt("jo@example.com", "10.0." + (i / 256) + "." + (i % 256));
+        }
+        assertThat(limiter.tryAttempt("jo@example.com", "10.9.9.9")).isFalse();
+        // home has signed in before, so the account-wide cap doesn't apply there
+        assertThat(limiter.tryAttempt("jo@example.com", "198.51.100.7")).isTrue();
+    }
+
+    @Test
+    void resetEmailsHaveTheirOwnBudget() {
+        TestClock clock = new TestClock();
+        LoginLimiter limiter = new LoginLimiter(clock);
+        for (int i = 0; i < LoginLimiter.RESETS_PER_ACCOUNT; i++) {
+            assertThat(limiter.tryResetEmail("jo@example.com", "10.0.0." + i)).isTrue();
+        }
+        assertThat(limiter.tryResetEmail("jo@example.com", "10.0.0.99")).isFalse();
+        // asking for resets doesn't stop anyone signing in
+        assertThat(limiter.tryAttempt("jo@example.com", "10.0.0.1")).isTrue();
+
+        clock.now = clock.now.plus(LoginLimiter.RESET_WINDOW).plusSeconds(1);
+        assertThat(limiter.tryResetEmail("jo@example.com", "10.0.0.99")).isTrue();
+    }
+
+    @Test
     void fortyAttemptsAtOnceStillOnlyGetFiveTries() throws Exception {
         LoginLimiter limiter = new LoginLimiter(new TestClock());
         List<Callable<Boolean>> tries = new ArrayList<>();
@@ -106,6 +152,6 @@ class LoginLimiterTest {
         for (int i = 0; i < LoginLimiter.SWEEP_EVERY - 300; i++) {
             limiter.tryAttempt("late@example.com", "10.9.9.9"); // the 1,000th attempt triggers a sweep
         }
-        assertThat(limiter.keys()).isEqualTo(3);
+        assertThat(limiter.keys()).isEqualTo(3); // just the late attempts' keys are left
     }
 }

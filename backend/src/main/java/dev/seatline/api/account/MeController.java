@@ -58,8 +58,8 @@ class MeController {
     }
 
     @PostMapping("/2fa/disable")
-    NewToken disable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CodeRequest r) {
-        TokenService.Token t = accounts.disableTwoFactor(UUID.fromString(jwt.getSubject()), r.code());
+    NewToken disable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CodeRequest r, HttpServletRequest http) {
+        TokenService.Token t = accounts.disableTwoFactor(UUID.fromString(jwt.getSubject()), r.code(), http.getRemoteAddr());
         return new NewToken(t.value(), t.expiresAt());
     }
 

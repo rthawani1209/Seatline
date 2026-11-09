@@ -218,5 +218,39 @@ class DoorFlowTest {
         String code = qr(fan, tickets.get(0));
         call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
         assertThat(scan(code, eventId).get("result").asText()).isEqualTo("CANCELLED");
+        // and it's off the door list, and takes no new promo codes
+        assertThat(body(call(HttpMethod.GET, "/door/events", door, null)).findValuesAsText("id")).doesNotContain(eventId);
+        call(HttpMethod.POST, "/events/" + eventId + "/promo-codes", organizer, """
+                {"code": "LATE", "percentOff": 10, "maxUses": 5}""")
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("event_cancelled"));
+    }
+
+    @Test
+    void aScanAndAReturnAtTheSameMomentCantBothWin() throws Exception {
+        for (int round = 0; round < 10; round++) {
+            String event = newEvent();
+            addToDoorTeam(event, doorEmail).andExpect(status().isCreated());
+            String tier = body(mvc.perform(request(HttpMethod.GET, "/events/" + event))).get("tiers").get(0).get("id").asText();
+            String holdId = body(call(HttpMethod.POST, "/events/" + event + "/holds", fan,
+                    "{\"items\": [{\"seat\": \"FLOOR-A-1\", \"tierId\": \"%s\"}]}".formatted(tier))).get("holdId").asText();
+            String ticket = body(call(HttpMethod.POST, "/holds/" + holdId + "/checkout", fan, "{\"cardToken\": \"tok_visa\"}"))
+                    .get("tickets").get(0).get("id").asText();
+            String code = qr(fan, ticket);
+
+            List<Callable<String>> both = List.of(
+                    () -> body(scanAs(door, code, event)).get("result").asText(),
+                    () -> String.valueOf(call(HttpMethod.POST, "/tickets/" + ticket + "/return", fan, null)
+                            .andReturn().getResponse().getStatus()));
+            List<String> got = new ArrayList<>();
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (Future<String> f : pool.invokeAll(both)) {
+                    got.add(f.get());
+                }
+            }
+            boolean scannedIn = got.get(0).equals("OK");
+            boolean refunded = got.get(1).equals("204");
+            assertThat(scannedIn && refunded).as("round %d: %s", round, got).isFalse();
+            assertThat(scannedIn || refunded).as("round %d: %s", round, got).isTrue();
+        }
     }
 }

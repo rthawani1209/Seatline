@@ -260,6 +260,12 @@ class EventFlowTest {
                  "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 1000, "sections": ["Floor", "Floor"]}]}"""
                 .formatted(venueId, startsAt, after))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("on_sale_after_start"));
+        post("/events", organizer, """
+                {"venueId": "%s", "name": "Half cents", "startsAt": "%s", "perFanLimit": 4,
+                 "feeBps": 0, "feeFlatCents": 0, "taxBps": 0,
+                 "tiers": [{"name": "GA", "kind": "STANDARD", "priceCents": 1.5, "sections": ["Floor"]}]}"""
+                .formatted(venueId, startsAt))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_request"));
 
         // naming a section twice in one ticket type is just the same section
         String eventId = body(post("/events", organizer, """

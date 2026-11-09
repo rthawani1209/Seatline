@@ -86,10 +86,10 @@ public class DoorService {
     /** The events this person can scan at: the ones they're on the door team for (admins: all of them). */
     public List<DoorEvent> doorEvents(CurrentUser by) {
         var query = by.isAdmin()
-                ? db.sql("select id, name, starts_at from events where status <> 'DRAFT' order by starts_at")
+                ? db.sql("select id, name, starts_at from events where status not in ('DRAFT', 'CANCELLED') order by starts_at")
                 : db.sql("""
                         select e.id, e.name, e.starts_at from events e join door_staff d on d.event_id = e.id
-                        where d.user_id = ? and e.status <> 'DRAFT' order by e.starts_at""").param(by.id());
+                        where d.user_id = ? and e.status not in ('DRAFT', 'CANCELLED') order by e.starts_at""").param(by.id());
         return query
                 .query((rs, n) -> new DoorEvent(rs.getObject(1, UUID.class), rs.getString(2),
                         rs.getTimestamp(3).toInstant()))
@@ -148,15 +148,24 @@ public class DoorService {
         if (!atEvent.equals(t.eventId())) {
             return new Scan(Result.WRONG_EVENT, t.seat(), t.tier(), t.eventName(), null);
         }
-        // the update only matches once, so two doors scanning the same code can't both let it in
+        // The update only matches once, so two doors scanning the same code can't both let it in,
+        // and only while the ticket is still valid, so a return or cancel that just landed wins.
         Instant now = db.sql("""
-                update tickets set scanned_at = now() where id = ? and scanned_at is null returning scanned_at""")
+                update tickets set scanned_at = now() where id = ? and scanned_at is null and status = 'VALID'
+                returning scanned_at""")
                 .param(p.ticketId()).query(Timestamp.class).optional().map(Timestamp::toInstant).orElse(null);
-        if (now == null) {
-            Instant first = db.sql("select scanned_at from tickets where id = ?").param(p.ticketId())
-                    .query(Timestamp.class).single().toInstant();
-            return new Scan(Result.ALREADY_SCANNED, t.seat(), t.tier(), t.eventName(), first);
+        if (now != null) {
+            return new Scan(Result.OK, t.seat(), t.tier(), t.eventName(), now);
         }
-        return new Scan(Result.OK, t.seat(), t.tier(), t.eventName(), now);
+        record After(Timestamp scannedAt, String status) {}
+        After after = db.sql("select scanned_at, status from tickets where id = ?").param(p.ticketId())
+                .query((rs, n) -> new After(rs.getTimestamp(1), rs.getString(2))).single();
+        if (after.scannedAt() != null) {
+            return new Scan(Result.ALREADY_SCANNED, t.seat(), t.tier(), t.eventName(), after.scannedAt().toInstant());
+        }
+        if (after.status().equals("CANCELLED")) {
+            return new Scan(Result.CANCELLED, t.seat(), t.tier(), t.eventName(), null);
+        }
+        return Scan.of(Result.INVALID);
     }
 }

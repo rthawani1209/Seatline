@@ -1,6 +1,10 @@
 spring:
   application:
     name: seatline-api
+  jackson:
+    deserialization:
+      # every amount is whole cents; 1.5 is a mistake to refuse, not a 1 to sell at
+      accept-float-as-int: false
   datasource:
     url: ${SEATLINE_DB_URL:jdbc:postgresql://localhost:5432/seatline}
     username: ${SEATLINE_DB_USER:seatline}
@@ -56,6 +60,8 @@ seatline:
   # the nodes' admin addresses (peer ports, nodes started with --admin) for the chaos panel;
   # leave unset to turn the panel off
   ledger-admin: ${SEATLINE_LEDGER_ADMIN:}
+  # this email's account becomes an admin when it confirms its address (the first admin on a new server)
+  admin-email: ${SEATLINE_ADMIN_EMAIL:}
   # the web app, for links in emails
   public-url: ${SEATLINE_PUBLIC_URL:http://localhost:3000}
   # mutual TLS with the ledger; set all three in a deployment (files from scripts/certs.sh)

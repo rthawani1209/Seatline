@@ -521,4 +521,53 @@ class OrderFlowTest {
         assertThat(seatStatus("FLOOR-A-3")).isEqualTo("SOLD");
         assertThat(seatStatus("FLOOR-A-4")).isEqualTo("SOLD");
     }
+
+    @Test
+    void aReturnAndACancelAtTheSameMomentRefundTheOrderOnce() throws Exception {
+        for (int round = 0; round < 6; round++) {
+            if (round > 0) {
+                onSaleEvent(); // the last one is cancelled
+            }
+            String fan = testUsers.bearer(Role.FAN);
+            JsonNode order = body(checkout(fan, body(hold(fan, null, "FLOOR-A-1", "FLOOR-A-2")).get("holdId").asText(), "tok_visa")
+                    .andExpect(status().isOk()));
+            String ticket = order.get("tickets").get(0).get("id").asText();
+            List<Callable<Integer>> both = List.of(
+                    () -> call(HttpMethod.POST, "/tickets/" + ticket + "/return", fan, null).andReturn().getResponse().getStatus(),
+                    () -> call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andReturn().getResponse().getStatus());
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (Future<Integer> f : pool.invokeAll(both)) {
+                    f.get();
+                }
+            }
+            String ref = jdbc.queryForObject("select payment_ref from orders where id = ?::uuid", String.class,
+                    order.get("id").asText());
+            assertThat(payments.refundedOn(ref)).as("round %d", round).isEqualTo(order.get("totalCents").asLong());
+        }
+    }
+
+    @Test
+    void payingWhileTheEventIsCalledOffIsRefundedAndSaysSo() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, null, "FLOOR-A-1")).get("holdId").asText();
+        // the card has gone through and the ledger confirmed, then the cancel lands before the order is saved
+        doThrow(new IllegalStateException("stop")).when(orders).step("confirmed");
+        try {
+            assertThatThrownBy(() -> checkout(fan, holdId, "tok_visa")).hasRootCauseMessage("stop");
+        } finally {
+            doNothing().when(orders).step("confirmed");
+        }
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
+
+        checkout(fan, holdId, "tok_visa").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("event_cancelled"));
+        String ref = jdbc.queryForObject("select payment_ref from orders where hold_id = ?", String.class, holdId);
+        long total = jdbc.queryForObject("select total_cents from orders where hold_id = ?", Long.class, holdId);
+        assertThat(payments.refundedOn(ref)).isEqualTo(total);
+        assertThat(jdbc.queryForObject("select count(*) from tickets where order_id = (select id from orders where hold_id = ?) and status = 'VALID'",
+                Long.class, holdId)).isZero();
+        String email = jdbc.queryForObject("select email from users u join holds h on h.fan_id = u.id where h.id = ?", String.class, holdId);
+        assertThat(jdbc.queryForList("select subject from outbox_emails where to_address = ?", String.class, email))
+                .contains("Cancelled: Late Show").doesNotContain("Your Seatline tickets");
+    }
 }
