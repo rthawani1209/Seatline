@@ -171,7 +171,7 @@ The sell-out load test ([`loadtest/`](../loadtest/), results in [`results/sellou
 - **Sequential scans.** Holds by fan, tickets by order and event, and payment attempts by hold had no indexes; at thousands of rows a second those scans dominated. Migration `V7` adds them.
 - **Waiting for a database connection.** With requests queueing for the pool, slow ones timed out after 30 seconds. The pool now gives up after 5 seconds, and the API turns "database busy" into `503 try_again`, which the app shows as "very busy, try again". A fan sees a quick answer instead of a spinning page, and a payment that couldn't be written in the rush is finished or refunded by the reconciler afterwards.
 
-After the fixes, all 5,000 seats sold in about 100 seconds with a purchase p99 of 639 ms and nothing double-sold, on one 4-core machine running everything.
+After the fixes, all 5,000 seats sold in about 100 seconds with nothing double-sold, on one 4-core machine running everything. Purchase p50 is 21 ms; p99 is 4.1 s in the committed run, taken right after the API started, while its JVM was still warming up.
 
 ### Data
 

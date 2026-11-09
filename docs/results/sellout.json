@@ -1,53 +1,53 @@
 {
-  "date": "2026-11-07T22:56:47Z",
+  "date": "2026-11-09T08:19:51Z",
   "machine": "4 cores, Intel(R) Xeon(R) Processor @ 2.10GHz; the whole stack (5 ledger nodes, API, Postgres, Redis) and Gatling on this one machine",
-  "command": "scripts/loadtest.sh -Dfans=10000 -DrampSeconds=300 -Dapi=http://172.18.0.3:8080",
-  "commit": "c0123b2 plus the rush fixes committed in c423af9 (run before that commit's later QA changes; the purchase path is the same)",
-  "eventId": "21dd6701-74b5-45eb-bcf7-ad1392bae35a",
+  "command": "scripts/loadtest.sh -Dfans=10000 -DrampSeconds=300 -Dapi=http://172.18.0.2:8080",
+  "commit": "c45df57",
+  "eventId": "282acd4c-6796-4e97-8c9e-2467f51a78d8",
   "fans": 10000,
   "rampSeconds": 300,
   "seats": 5000,
-  "fansWhoBought": 3356,
+  "fansWhoBought": 3330,
   "seatsBoughtByFans": 5000,
-  "fansWhoFoundItSoldOut": 6628,
-  "fansWhoGaveUpAfterFiveTries": 16,
+  "fansWhoFoundItSoldOut": 6659,
+  "fansWhoGaveUpAfterFiveTries": 11,
   "fansWhosePaymentFailed": 0,
   "busyAnswers503": 0,
-  "secondsToSellOut": 100.8,
+  "secondsToSellOut": 100.1,
   "purchasesPerSecond": 33.3,
   "latencyMs": {
     "seat map": {
-      "count": 10149,
-      "p50": 2,
-      "p95": 7,
-      "p99": 10,
-      "max": 242
+      "count": 10128,
+      "p50": 1,
+      "p95": 8,
+      "p99": 497,
+      "max": 1841
     },
     "hold": {
-      "count": 3521,
-      "p50": 7,
-      "p95": 12,
-      "p99": 179,
-      "max": 496
+      "count": 3469,
+      "p50": 8,
+      "p95": 746,
+      "p99": 1693,
+      "max": 3625
     },
     "checkout": {
-      "count": 3356,
-      "p50": 8,
-      "p95": 15,
-      "p99": 227,
-      "max": 599
+      "count": 3330,
+      "p50": 9,
+      "p95": 557,
+      "p99": 2238,
+      "max": 3785
     },
     "purchase": {
-      "count": 3356,
-      "p50": 20,
-      "p95": 37,
-      "p99": 639,
-      "max": 1220
+      "count": 3330,
+      "p50": 21,
+      "p95": 2143,
+      "p99": 4085,
+      "max": 5406
     }
   },
   "tickets": 5000,
   "seatsWithTwoTickets": 0,
-  "orders": 3356,
+  "orders": 3330,
   "ordersWithoutPayment": 0,
   "paymentsLost": 0,
   "ledgerSold": 5000,
