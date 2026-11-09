@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
 import { api, explain } from "@/lib/api";
+import { useHydrated } from "@/lib/hooks";
 
 export default function ForgotPage() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const hydrated = useHydrated();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -49,7 +51,7 @@ export default function ForgotPage() {
             Email
             <input className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
-          <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+          <button type="submit" className="btn btn-primary btn-block" disabled={!hydrated || busy}>
             {busy ? "Sending…" : "Email me a reset link"}
           </button>
           <p className={s.alt}>

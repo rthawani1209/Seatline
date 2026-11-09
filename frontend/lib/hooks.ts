@@ -91,3 +91,13 @@ export function useCountdown(iso: string | null | undefined): number | null {
   }, [iso]);
   return left;
 }
+
+/**
+ * False until React has taken over the page. A form submitted before that does a plain browser
+ * submit (a reload that loses what was typed), so submit buttons wait for this.
+ */
+export function useHydrated() {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+  return hydrated;
+}

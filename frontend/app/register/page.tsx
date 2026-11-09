@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
 import { api, explain } from "@/lib/api";
+import { useHydrated } from "@/lib/hooks";
 
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
@@ -11,6 +12,7 @@ export default function RegisterPage() {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const hydrated = useHydrated();
   const [done, setDone] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -71,7 +73,7 @@ export default function RegisterPage() {
           />
           <span className="hint">At least 12 characters.</span>
         </label>
-        <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+        <button type="submit" className="btn btn-primary btn-block" disabled={!hydrated || busy}>
           {busy ? "Creating…" : "Create account"}
         </button>
         <p className={s.alt}>

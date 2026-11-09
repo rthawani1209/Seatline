@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
 import { api, explain } from "@/lib/api";
+import { useHydrated } from "@/lib/hooks";
 
 export default function ResetPage() {
   return (
@@ -21,6 +22,7 @@ function Reset() {
   const [again, setAgain] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const hydrated = useHydrated();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,7 +89,7 @@ function Reset() {
             onChange={(e) => setAgain(e.target.value)}
           />
         </label>
-        <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+        <button type="submit" className="btn btn-primary btn-block" disabled={!hydrated || busy}>
           {busy ? "Saving…" : "Save new password"}
         </button>
         <p className={s.alt}>

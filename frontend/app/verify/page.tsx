@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
 import { api, explain } from "@/lib/api";
+import { useHydrated } from "@/lib/hooks";
 
 export default function VerifyPage() {
   return (
@@ -21,6 +22,7 @@ function Verify() {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const hydrated = useHydrated();
   const sent = useRef(false);
 
   const verify = useCallback(
@@ -78,7 +80,7 @@ function Verify() {
               />
               <span className="hint">It&apos;s in the email we sent when you signed up, and works for 24 hours.</span>
             </label>
-            <button type="submit" className="btn btn-primary btn-block" disabled={busy || !code.trim()}>
+            <button type="submit" className="btn btn-primary btn-block" disabled={!hydrated || busy || !code.trim()}>
               {busy ? "Checking…" : "Verify"}
             </button>
           </>

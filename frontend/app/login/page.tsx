@@ -6,6 +6,7 @@ import { Suspense, useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
 import { api, ApiError, explain } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useHydrated } from "@/lib/hooks";
 
 export default function LoginPage() {
   return (
@@ -30,6 +31,7 @@ function Login() {
   const [needCode, setNeedCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const hydrated = useHydrated();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -94,7 +96,7 @@ function Login() {
             <span className="hint">Two-step sign-in is on for this account.</span>
           </label>
         )}
-        <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+        <button type="submit" className="btn btn-primary btn-block" disabled={!hydrated || busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
         <p className={s.alt}>
