@@ -66,6 +66,15 @@ export default function CheckoutPage() {
         setEnded(true);
         forgetHold(holdId);
       }
+      if (e instanceof ApiError && e.code === "event_cancelled") {
+        // nothing left to pay for: show the cancelled (or refunded) page instead of the form
+        forgetHold(holdId);
+        const h = await api<SavedHold>(`/holds/${holdId}`).catch(() => null);
+        if (h) {
+          setHold(h);
+          return;
+        }
+      }
       setError(explain(e));
     } finally {
       setBusy(null);
@@ -126,6 +135,28 @@ export default function CheckoutPage() {
           <p>These seats are yours. Your tickets are waiting in My tickets.</p>
           <Link href="/tickets" className="btn btn-primary">
             See my tickets
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if ((hold.state === "REFUNDED" || hold.state === "CANCELLED") && !order) {
+    const paid = hold.state === "REFUNDED";
+    return (
+      <div className={s.shell}>
+        <div className={`panel ${s.card}`} style={{ padding: 24 }} role="status">
+          {paid && <p className="eyebrow">Order {hold.orderId?.slice(0, 8).toUpperCase()}</p>}
+          <h1 className="display" style={{ fontSize: 40, margin: "0 0 8px" }}>
+            Event cancelled
+          </h1>
+          <p>
+            {paid
+              ? "This event was called off after you paid, so your payment has been refunded in full to the card you used. Refunds usually show up within 5 to 10 business days."
+              : "This event was called off before you paid, so nothing was charged."}
+          </p>
+          <Link href="/" className="btn">
+            Back to events
           </Link>
         </div>
       </div>

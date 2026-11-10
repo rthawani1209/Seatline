@@ -329,3 +329,12 @@ textarea {
 .skip:focus {
   top: 12px;
 }
+
+/* a fieldset used only to disable a form's fields, adding no box of its own */
+fieldset.contents {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}

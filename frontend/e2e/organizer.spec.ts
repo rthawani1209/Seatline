@@ -143,10 +143,17 @@ test("door staff on no door team are told who to ask", async ({ page, request })
   await expect(page.getByLabel("Scanning for")).toHaveCount(0);
 });
 
-test("an organizer cancels an event: fans are refunded and the page says so", async ({ page, request }) => {
+test("an organizer cancels an event: fans are refunded and the page says so", async ({ page, request, browser }) => {
   const ev = await onSaleEvent(request);
   const fan = await account(request);
   await buy(request, fan.token, ev.id, tierId(ev.event, "Main floor"), ["MAIN-A-1"]);
+  // someone else is still at checkout when it's called off
+  const late = await account(request);
+  const held = await request.post(`/api/events/${ev.id}/holds`, {
+    headers: { authorization: `Bearer ${late.token}` },
+    data: { items: [{ seat: "MAIN-A-2", tierId: tierId(ev.event, "Main floor") }] },
+  });
+  const holdId = (await held.json()).holdId as string;
 
   await signIn(page, ev.organizer.email);
   await page.goto(`/organizer/events/${ev.id}`);
@@ -162,4 +169,12 @@ test("an organizer cancels an event: fans are refunded and the page says so", as
   expect(await (await request.get("/api/me/tickets", { headers: auth(fan.token) })).json()).toEqual([]);
   await page.goto(`/events/${ev.id}`);
   await expect(page.getByText("This event has been cancelled.")).toBeVisible();
+
+  const other = await browser.newContext({ ...test.info().project.use });
+  const latePage = await other.newPage();
+  await signIn(latePage, late.email);
+  await latePage.goto(`/checkout/${holdId}`);
+  await expect(latePage.getByRole("heading", { name: "Event cancelled" })).toBeVisible();
+  await expect(latePage.getByText("nothing was charged")).toBeVisible();
+  await other.close();
 });

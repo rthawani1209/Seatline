@@ -4,7 +4,7 @@ import type { Hold } from "./types";
 // GET /holds/{id} it also says where it stands.
 export type SavedHold = Hold & {
   eventId: string;
-  state?: "OPEN" | "PAID" | "RELEASED" | "EXPIRED";
+  state?: "OPEN" | "PAID" | "REFUNDED" | "CANCELLED" | "RELEASED" | "EXPIRED";
   orderId?: string | null;
 };
 

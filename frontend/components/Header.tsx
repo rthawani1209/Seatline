@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { ThemeToggle } from "./ThemeToggle";
 import s from "./Header.module.css";
@@ -13,6 +13,20 @@ export function Header() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => setOpen(false), [path]);
+
+  // Escape closes the phone menu and puts focus back on its button
+  const menuBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        menuBtn.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
 
   const links: { href: string; label: string }[] = [{ href: "/", label: "Events" }];
   if (me) links.push({ href: "/tickets", label: "My tickets" });
@@ -31,6 +45,7 @@ export function Header() {
         </Link>
 
         <button
+          ref={menuBtn}
           type="button"
           className={s.menuBtn}
           aria-expanded={open}

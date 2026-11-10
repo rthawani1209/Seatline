@@ -57,6 +57,8 @@ function Verify() {
           verify(code.trim());
         }}
       >
+        {/* nothing can be typed until the page is live, so nothing typed is lost */}
+        <fieldset disabled={!hydrated} className="contents">
         {error && (
           <div className="alert" role="alert">
             {error}
@@ -88,6 +90,7 @@ function Verify() {
         <p className={s.alt}>
           No email? <Link href="/register">Sign up again</Link>
         </p>
+        </fieldset>
       </form>
     </AuthCard>
   );

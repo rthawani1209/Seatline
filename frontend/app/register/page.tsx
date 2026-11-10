@@ -45,6 +45,8 @@ export default function RegisterPage() {
   return (
     <AuthCard kicker="NEW FAN" title="Create account">
       <form onSubmit={submit} className={s.form} style={{ padding: 0 }}>
+        {/* nothing can be typed until the page is live, so nothing typed is lost */}
+        <fieldset disabled={!hydrated} className="contents">
         {error && (
           <div className="alert" role="alert">
             {error}
@@ -79,6 +81,7 @@ export default function RegisterPage() {
         <p className={s.alt}>
           Already have one? <Link href="/login">Sign in</Link>
         </p>
+        </fieldset>
       </form>
     </AuthCard>
   );

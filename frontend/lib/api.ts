@@ -116,6 +116,8 @@ export function explain(e: unknown): string {
     wrong_password: "Your current password isn't right.",
     already_enabled: "Two-step sign-in is already on.",
     no_setup_in_progress: "Start the setup again to get a fresh QR code.",
+    thats_you: "That's your own email. Enter the email of the person you're sending it to.",
+    too_late_to_transfer: "This ticket can't be sent on any more: it's been scanned or the show has started.",
     too_late_to_return: "This ticket can't be returned any more: it's been scanned or the show has started.",
     only_the_buyer_can_return: "Only the person who bought this ticket can return it. You can send it on instead.",
     no_queue: "This event doesn't have a waiting room.",

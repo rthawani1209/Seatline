@@ -94,6 +94,8 @@ function Live() {
   const draft = event.status === "DRAFT";
   const cancelled = event.status === "CANCELLED";
   const started = Date.parse(event.startsAt) <= Date.now();
+  // only the event's own organizer (or an admin) can call it off
+  const canCancel = !!me && (me.role === "ADMIN" || me.id === event.organizerId);
   const peak = Math.max(1, ...rates);
   const doubleSold = stats ? Math.max(0, stats.tickets - stats.sold) : 0;
 
@@ -119,7 +121,7 @@ function Live() {
           <Link href={`/events/${id}`} className="btn">
             Fan page
           </Link>
-          {!cancelled && !started && (
+          {!cancelled && !started && canCancel && (
             <button type="button" className="btn" onClick={() => setConfirmCancel(true)} disabled={busy}>
               Cancel event
             </button>
@@ -158,8 +160,8 @@ function Live() {
         <Tile label="Seats sold" value={stats ? stats.sold.toLocaleString() : "…"} sub={stats ? `of ${stats.seats.toLocaleString()}` : ""} big />
         <Tile label="Held right now" value={stats ? stats.held.toLocaleString() : "…"} />
         <Tile label="In the waiting room" value={stats ? stats.waiting.toLocaleString() : "…"} />
-        <Tile label="Revenue" value={stats ? money(stats.revenueCents) : "…"} />
-        <Tile label="Orders" value={stats ? stats.orders.toLocaleString() : "…"} />
+        <Tile label="Revenue" value={stats ? money(stats.revenueCents) : "…"} sub={cancelled ? "all refunded" : ""} />
+        <Tile label="Orders" value={stats ? stats.orders.toLocaleString() : "…"} sub={cancelled ? "all refunded" : ""} />
         <Tile label="Scanned in" value={stats ? stats.scanned.toLocaleString() : "…"} />
         <Tile label="Returned" value={stats ? stats.returned.toLocaleString() : "…"} />
         <div className={s.proof}>
@@ -214,6 +216,7 @@ type Promo = { code: string; percentOff: number; maxUses: number; used: number; 
 function PromoCodes({ eventId }: { eventId: string }) {
   const { data: promos, reload } = useApi<Promo[]>(`/events/${eventId}/promo-codes`);
   const [code, setCode] = useState("");
+  // not capped while typing: 150 stays 150, so the form says it's over 100 instead of quietly making it 100
   const [pct, setPct] = useState(10);
   const [uses, setUses] = useState(100);
   const [error, setError] = useState<string | null>(null);
@@ -253,7 +256,7 @@ function PromoCodes({ eventId }: { eventId: string }) {
         </label>
         <label className="field">
           % off
-          <input className="input mono" type="number" min={1} max={100} required value={pct || ""} onChange={(e) => setPct(Math.min(100, Math.max(0, Math.floor(Number(e.target.value)) || 0)))} />
+          <input className="input mono" type="number" min={1} max={100} required value={pct || ""} onChange={(e) => setPct(Math.max(0, Math.floor(Number(e.target.value)) || 0))} />
         </label>
         <label className="field">
           Uses

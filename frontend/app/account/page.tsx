@@ -64,6 +64,7 @@ function TwoStep({ enabled }: { enabled: boolean }) {
   const [setup, setSetup] = useState<{ secret: string; svg: string } | null>(null);
   const [disabling, setDisabling] = useState(false);
   const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
@@ -94,12 +95,13 @@ function TwoStep({ enabled }: { enabled: boolean }) {
         const r = await api<{ token: string; expiresAt: string }>("/me/2fa/disable", { body: { code } });
         setToken(r.token, r.expiresAt);
       } else {
-        await api("/me/2fa/enable", { body: { code } });
+        await api("/me/2fa/enable", { body: { code, password } });
       }
       setFlash(enabled ? "Two-step sign-in is off. You've been signed out on your other devices." : "Two-step sign-in is on. You'll need a code next time you sign in.");
       setSetup(null);
       setDisabling(false);
       setCode("");
+      setPassword("");
       await refresh();
     } catch (err) {
       setError(explain(err));
@@ -112,6 +114,7 @@ function TwoStep({ enabled }: { enabled: boolean }) {
     setSetup(null);
     setDisabling(false);
     setCode("");
+    setPassword("");
     setError(null);
   }
 
@@ -167,8 +170,21 @@ function TwoStep({ enabled }: { enabled: boolean }) {
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
             />
           </label>
+          {!enabled && (
+            <label className="field">
+              Your password
+              <input
+                className="input"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+          )}
           <div className={s.actions}>
-            <button type="submit" className="btn btn-primary" disabled={busy || code.length !== 6}>
+            <button type="submit" className="btn btn-primary" disabled={busy || code.length !== 6 || (!enabled && !password)}>
               {busy ? "Checking…" : enabled ? "Turn off" : "Turn on"}
             </button>
             <button type="button" className="btn" onClick={cancel} disabled={busy}>

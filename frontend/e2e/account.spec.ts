@@ -40,6 +40,7 @@ test("turn two-step sign-in on from the account page, need a code to sign in, th
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
   const secret = (await page.getByLabel("Setup key").textContent())!.trim();
 
+  await page.getByLabel("Your password").fill(PASSWORD);
   await page.getByLabel("Code from the app").fill("000000");
   await page.getByRole("button", { name: "Turn on" }).click();
   await expect(alert(page)).toContainText("didn't work");
@@ -109,6 +110,9 @@ test("forgot password: the emailed link sets a new password, and works only once
   const fan = await account(request);
   await page.goto("/login");
   await page.getByRole("link", { name: "Forgot password?" }).click();
+  // wait for the new page: the sign-in page has an Email box too, and filling that one by mistake
+  // left this form empty (the CI failure on c45df57)
+  await expect(page.getByRole("heading", { name: "Reset password" })).toBeVisible();
   await page.getByLabel("Email").fill(fan.email);
   await page.getByRole("button", { name: "Email me a reset link" }).click();
   await expect(page.getByRole("status")).toContainText("we've emailed it a link");

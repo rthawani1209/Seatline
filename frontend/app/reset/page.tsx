@@ -57,6 +57,8 @@ function Reset() {
   return (
     <AuthCard kicker="LOST STUB" title="Choose a new password">
       <form onSubmit={submit} className={s.form} style={{ padding: 0 }}>
+        {/* nothing can be typed until the page is live, so nothing typed is lost */}
+        <fieldset disabled={!hydrated} className="contents">
         {error && (
           <div className="alert" role="alert">
             {error}
@@ -95,6 +97,7 @@ function Reset() {
         <p className={s.alt}>
           Link expired? <Link href="/forgot">Get a new one</Link>
         </p>
+        </fieldset>
       </form>
     </AuthCard>
   );

@@ -96,3 +96,10 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* long names and email addresses wrap instead of pushing the page wider on small phones */
+.shell h1,
+.facts dd {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}

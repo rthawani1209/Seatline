@@ -42,6 +42,8 @@ export default function ForgotPage() {
         </div>
       ) : (
         <form onSubmit={submit} className={s.form} style={{ padding: 0 }}>
+          {/* nothing can be typed until the page is live, so nothing typed is lost */}
+          <fieldset disabled={!hydrated} className="contents">
           {error && (
             <div className="alert" role="alert">
               {error}
@@ -57,6 +59,7 @@ export default function ForgotPage() {
           <p className={s.alt}>
             Remembered it? <Link href="/login">Sign in</Link>
           </p>
+          </fieldset>
         </form>
       )}
     </AuthCard>

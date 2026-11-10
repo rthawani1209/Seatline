@@ -153,7 +153,10 @@ export default function EventPage() {
     return (
       <div className="wrap" style={{ padding: "60px 20px" }}>
         <div className="alert" role="alert">
-          {explain(eventError)}
+          {/* a link that isn't an event id at all (400) is just a missing event to a fan */}
+          {eventError instanceof ApiError && (eventError.status === 404 || eventError.status === 400)
+            ? "We couldn't find that event. It may have been taken down, or the link is wrong."
+            : explain(eventError)}
         </div>
         <p>
           <Link href="/">Back to events</Link>
