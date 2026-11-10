@@ -5,6 +5,9 @@ spring:
     deserialization:
       # every amount is whole cents; 1.5 is a mistake to refuse, not a 1 to sell at
       accept-float-as-int: false
+    mapper:
+      # and "3" is a string, not a number
+      allow-coercion-of-scalars: false
   datasource:
     url: ${SEATLINE_DB_URL:jdbc:postgresql://localhost:5432/seatline}
     username: ${SEATLINE_DB_USER:seatline}
@@ -60,7 +63,8 @@ seatline:
   # the nodes' admin addresses (peer ports, nodes started with --admin) for the chaos panel;
   # leave unset to turn the panel off
   ledger-admin: ${SEATLINE_LEDGER_ADMIN:}
-  # this email's account becomes an admin when it confirms its address (the first admin on a new server)
+  # this email's account becomes an admin when it sets its password from a reset link (the first
+  # admin on a new server)
   admin-email: ${SEATLINE_ADMIN_EMAIL:}
   # the web app, for links in emails
   public-url: ${SEATLINE_PUBLIC_URL:http://localhost:3000}

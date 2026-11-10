@@ -63,7 +63,8 @@ class OutboxSender {
                 m.setSubject(e.subject());
                 m.setText(e.body());
                 mail.send(m);
-                jdbc.update("update outbox_emails set sent_at = now(), attempts = attempts + 1 where id = ?", e.id());
+                // the body can hold a reset or confirm link; once it's gone out there's no need to keep it
+                jdbc.update("update outbox_emails set sent_at = now(), attempts = attempts + 1, body = '' where id = ?", e.id());
                 sent++;
             } catch (RuntimeException failed) {
                 jdbc.update("update outbox_emails set attempts = attempts + 1 where id = ?", e.id());

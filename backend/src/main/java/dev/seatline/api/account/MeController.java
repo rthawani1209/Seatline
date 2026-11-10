@@ -28,6 +28,8 @@ class MeController {
 
     record CodeRequest(@NotBlank String code) {}
 
+    record EnableRequest(@NotBlank String code, @NotBlank String password) {}
+
     record PasswordRequest(@NotBlank String currentPassword, @NotBlank @Size(min = 12, max = 128) String newPassword) {}
 
     record NewToken(String token, Instant expiresAt) {}
@@ -53,8 +55,8 @@ class MeController {
 
     @PostMapping("/2fa/enable")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void enable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CodeRequest r) {
-        accounts.enableTwoFactor(UUID.fromString(jwt.getSubject()), r.code());
+    void enable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody EnableRequest r, HttpServletRequest http) {
+        accounts.enableTwoFactor(UUID.fromString(jwt.getSubject()), r.code(), r.password(), http.getRemoteAddr());
     }
 
     @PostMapping("/2fa/disable")

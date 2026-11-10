@@ -218,7 +218,10 @@ class DoorFlowTest {
         String code = qr(fan, tickets.get(0));
         call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
         assertThat(scan(code, eventId).get("result").asText()).isEqualTo("CANCELLED");
-        // and it's off the door list, and takes no new promo codes
+        // and it's off the door list, takes no new door staff and no new promo codes
+        String another = "door-" + UUID.randomUUID() + "@example.com";
+        testUsers.bearer(Role.DOOR_STAFF, another);
+        addToDoorTeam(eventId, another).andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("event_cancelled"));
         assertThat(body(call(HttpMethod.GET, "/door/events", door, null)).findValuesAsText("id")).doesNotContain(eventId);
         call(HttpMethod.POST, "/events/" + eventId + "/promo-codes", organizer, """
                 {"code": "LATE", "percentOff": 10, "maxUses": 5}""")
@@ -252,5 +255,13 @@ class DoorFlowTest {
             assertThat(scannedIn && refunded).as("round %d: %s", round, got).isFalse();
             assertThat(scannedIn || refunded).as("round %d: %s", round, got).isTrue();
         }
+    }
+
+    @Test
+    void doorStaffWhoAreDemotedLeaveTheirDoorTeams() throws Exception {
+        String id = body(call(HttpMethod.GET, "/events/" + eventId + "/door-staff", organizer, null)).get(0).get("id").asText();
+        call(HttpMethod.PUT, "/admin/users/" + id + "/role", testUsers.bearer(Role.ADMIN), "{\"role\": \"FAN\"}")
+                .andExpect(status().isNoContent());
+        assertThat(body(call(HttpMethod.GET, "/events/" + eventId + "/door-staff", organizer, null))).isEmpty();
     }
 }

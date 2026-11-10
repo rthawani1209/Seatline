@@ -43,6 +43,11 @@ class OutboxSenderTest {
                 && "Seatline <tickets@seatline.test>".equals(m.getFrom()) && m.getText().equals("body one")));
         assertThat(jdbc.queryForObject("select sent_at is not null from outbox_emails where to_address = 'ok@example.com'",
                 Boolean.class)).isTrue();
+        // what it said (maybe a reset link) isn't kept once it's gone; the unsent one still is
+        assertThat(jdbc.queryForObject("select body from outbox_emails where to_address = 'ok@example.com'", String.class))
+                .isEmpty();
+        assertThat(jdbc.queryForObject("select body from outbox_emails where to_address = 'bounce@example.com'", String.class))
+                .isEqualTo("body two");
         assertThat(jdbc.queryForObject("select attempts from outbox_emails where to_address = 'bounce@example.com'",
                 Integer.class)).isEqualTo(1);
 

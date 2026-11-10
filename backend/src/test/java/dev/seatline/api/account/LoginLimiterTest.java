@@ -97,6 +97,20 @@ class LoginLimiterTest {
     }
 
     @Test
+    void someoneSprayingFromASharedNetworkDoesntLockOutItsRegulars() {
+        LoginLimiter limiter = new LoginLimiter(new TestClock());
+        String campus = "203.0.113.80"; // one address for a whole campus
+        assertThat(limiter.tryAttempt("jo@example.com", campus)).isTrue();
+        limiter.succeeded("jo@example.com", campus);
+
+        for (int i = 0; i < LoginLimiter.MAX_PER_ADDRESS * 2; i++) {
+            limiter.tryAttempt("user" + i + "@example.com", campus);
+        }
+        assertThat(limiter.tryAttempt("newcomer@example.com", campus)).isFalse();
+        assertThat(limiter.tryAttempt("jo@example.com", campus)).isTrue();
+    }
+
+    @Test
     void resetEmailsHaveTheirOwnBudget() {
         TestClock clock = new TestClock();
         LoginLimiter limiter = new LoginLimiter(clock);

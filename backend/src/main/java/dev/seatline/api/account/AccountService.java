@@ -57,8 +57,8 @@ public class AccountService {
     }
 
     /**
-     * New accounts are fans (or, for SEATLINE_ADMIN_EMAIL, an admin once confirmed); an admin
-     * promotes organizers and door staff.
+     * New accounts are fans; an admin promotes organizers and door staff. The first admin is
+     * SEATLINE_ADMIN_EMAIL's account, once it sets its password from a reset link.
      */
     @Transactional
     public User register(String email, String password, String displayName) {
@@ -86,14 +86,7 @@ public class AccountService {
         if (rows.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_or_expired_token");
         }
-        users.findById(rows.getFirst()).ifPresent(user -> {
-            user.markEmailVerified();
-            // the site owner's own account becomes the first admin once they've proved the inbox,
-            // so a new server needs no database commands
-            if (user.email().equals(adminEmail)) {
-                user.setRole(Role.ADMIN);
-            }
-        });
+        users.findById(rows.getFirst()).ifPresent(User::markEmailVerified);
     }
 
     /**
@@ -144,8 +137,16 @@ public class AccountService {
     }
 
     @Transactional
-    public void enableTwoFactor(UUID userId, String code) {
+    public void enableTwoFactor(UUID userId, String code, String password, String address) {
         User user = get(userId);
+        // someone at an unlocked laptop mustn't be able to tie the account to their own phone
+        if (!limiter.tryAttempt(user.email(), address)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
+        }
+        if (!passwords.matches(password, user.passwordHash())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "wrong_password");
+        }
+        limiter.succeeded(user.email(), address);
         if (user.totpPending() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "no_setup_in_progress");
         }
@@ -236,6 +237,12 @@ public class AccountService {
         User user = get(rows.getFirst());
         user.changePassword(passwords.encode(next));
         user.markEmailVerified();
+        // The site owner's account becomes the first admin here, not when it's confirmed: whoever
+        // signed up with the owner's email chose that password, but a reset link sets a password
+        // only the inbox's owner knows (and signs everyone else out).
+        if (user.email().equals(adminEmail)) {
+            user.setRole(Role.ADMIN);
+        }
         jdbc.update("delete from password_resets where user_id = ?", user.id()); // older links too
     }
 
@@ -243,6 +250,10 @@ public class AccountService {
     public void setRole(UUID userId, Role role) {
         User user = users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_user"));
         user.setRole(role);
+        if (role != Role.DOOR_STAFF) {
+            // no longer door staff, so off every door team too
+            jdbc.update("delete from door_staff where user_id = ?", userId);
+        }
     }
 
     static String normalize(String email) {

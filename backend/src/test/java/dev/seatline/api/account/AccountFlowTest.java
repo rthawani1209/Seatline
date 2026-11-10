@@ -66,18 +66,35 @@ class AccountFlowTest {
         return token(login(email, PASSWORD, null));
     }
 
+    static String enable(String code) {
+        return "{\"code\": \"" + code + "\", \"password\": \"" + PASSWORD + "\"}";
+    }
+
     String token(ResultActions login) throws Exception {
         JsonNode body = json.readTree(login.andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
         return body.get("token").asText();
     }
 
     @Test
-    void theSiteOwnersAccountBecomesAdminOnceItsEmailIsConfirmed() throws Exception {
-        register("owner@example.com", PASSWORD).andExpect(status().isCreated());
-        assertThat(users.findByEmail("owner@example.com").orElseThrow().role()).isEqualTo(Role.FAN);
+    void theSiteOwnerBecomesAdminBySettingTheirPasswordFromAResetLink() throws Exception {
+        // someone else signs up with the owner's address first, and the confirm link gets clicked
+        String squatterPassword = "the squatter's own password";
+        register("owner@example.com", squatterPassword).andExpect(status().isCreated());
         postJson("/auth/verify", "{\"token\": \"" + verificationToken("owner@example.com") + "\"}").andExpect(status().isNoContent());
-        String token = token(login("owner@example.com", PASSWORD, null));
-        mvc.perform(get("/me").header("Authorization", "Bearer " + token)).andExpect(jsonPath("$.role").value("ADMIN"));
+        String squatter = token(login("owner@example.com", squatterPassword, null));
+        mvc.perform(get("/me").header("Authorization", "Bearer " + squatter)).andExpect(jsonPath("$.role").value("FAN"));
+
+        // the owner takes it back with a reset link, which only reaches their inbox
+        postJson("/auth/forgot", "{\"email\": \"owner@example.com\"}").andExpect(status().isNoContent());
+        String body = jdbc.queryForObject("select body from outbox_emails where to_address = ? order by id desc limit 1",
+                String.class, "owner@example.com");
+        String reset = body.substring(body.indexOf("token=") + 6).split("\\s")[0];
+        postJson("/auth/reset", "{\"token\": \"" + reset + "\", \"password\": \"" + PASSWORD + "\"}").andExpect(status().isNoContent());
+
+        mvc.perform(get("/me").header("Authorization", "Bearer " + squatter)).andExpect(status().isUnauthorized());
+        login("owner@example.com", squatterPassword, null).andExpect(status().isUnauthorized());
+        String owner = token(login("owner@example.com", PASSWORD, null));
+        mvc.perform(get("/me").header("Authorization", "Bearer " + owner)).andExpect(jsonPath("$.role").value("ADMIN"));
         // anyone else stays a fan
         String fan = signUp(email());
         mvc.perform(get("/me").header("Authorization", "Bearer " + fan)).andExpect(jsonPath("$.role").value("FAN"));
@@ -148,8 +165,12 @@ class AccountFlowTest {
         String secret = json.readTree(body).get("secret").asText();
         long step = Totp.currentStep(Clock.systemUTC());
 
+        // a right code isn't enough: whoever turns it on has to know the password
         mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"code\": \"" + Totp.code(secret, step) + "\"}")).andExpect(status().isNoContent());
+                .content("{\"code\": \"" + Totp.code(secret, step) + "\", \"password\": \"not the password\"}"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error").value("wrong_password"));
+        mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
+                .content(enable(Totp.code(secret, step)))).andExpect(status().isNoContent());
 
         login(email, PASSWORD, null).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("code_required"));
         // the code used to enable it can't be used again
@@ -165,7 +186,7 @@ class AccountFlowTest {
                 .andReturn().getResponse().getContentAsString()).get("secret").asText();
         long step = Totp.currentStep(Clock.systemUTC());
         mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"code\": \"" + Totp.code(secret, step) + "\"}")).andExpect(status().isNoContent());
+                .content(enable(Totp.code(secret, step)))).andExpect(status().isNoContent());
 
         // the enabling code can't turn it off again, nor can a made-up one
         for (String code : new String[] {Totp.code(secret, step), "12345"}) {
@@ -192,7 +213,7 @@ class AccountFlowTest {
                 .andReturn().getResponse().getContentAsString()).get("secret").asText();
         long step = Totp.currentStep(Clock.systemUTC());
         mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"code\": \"" + Totp.code(secret, step) + "\"}")).andExpect(status().isNoContent());
+                .content(enable(Totp.code(secret, step)))).andExpect(status().isNoContent());
 
         String code = Totp.code(secret, step + 1);
         java.util.List<java.util.concurrent.Callable<Integer>> tries = new java.util.ArrayList<>();

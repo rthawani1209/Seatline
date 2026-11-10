@@ -62,7 +62,8 @@ public class OrderService {
     /**
      * A fan's hold, for the checkout page after a reload.
      *
-     * @param state OPEN (can still be paid), PAID, RELEASED (let go) or EXPIRED
+     * @param state OPEN (can still be paid), PAID, REFUNDED (paid, then the event was cancelled),
+     *     CANCELLED (the event was cancelled before it was paid), RELEASED (let go) or EXPIRED
      */
     public record HoldView(String holdId, UUID eventId, Instant expiresAt, EventService.Quote quote, String state,
                            UUID orderId) {}
@@ -153,9 +154,11 @@ public class OrderService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_hold"));
         UUID orderId = db.sql("select id from orders where hold_id = ?").param(holdId).query(UUID.class)
                 .optional().orElse(null);
-        String state = orderId != null ? "PAID"
+        boolean cancelled = "CANCELLED".equals(events.get(r.eventId()).status());
+        String state = orderId != null ? (cancelled ? "REFUNDED" : "PAID")
                 : r.released() ? "RELEASED"
                 : r.expired() ? "EXPIRED"
+                : cancelled ? "CANCELLED"
                 : "OPEN";
         return new HoldView(holdId, r.eventId(), r.expires(), read(r.quote()), state, orderId);
     }
@@ -165,7 +168,19 @@ public class OrderService {
         if (orderForHold(holdId).isPresent()) {
             throw new ApiException(HttpStatus.CONFLICT, "already_paid");
         }
-        seats.write(new SeatCommand.Release(h.id()));
+        SeatResult r = seats.write(new SeatCommand.Release(h.id()));
+        if (!r.ok()) {
+            // The ledger no longer has the hold: a checkout confirmed it a moment ago, or it ran out.
+            // Either way the promo use isn't ours to hand back here (the reconciler returns it for a
+            // hold that ended unpaid).
+            boolean paying = db.sql("""
+                    select exists (select 1 from payment_attempts where hold_id = ? and state in ('CHARGING', 'CHARGED', 'DONE'))""")
+                    .param(h.id()).query(Boolean.class).single();
+            if (paying || orderForHold(holdId).isPresent()) {
+                throw new ApiException(HttpStatus.CONFLICT, "already_paid");
+            }
+            return;
+        }
         db.sql("update holds set released_at = now() where id = ?").param(h.id()).update();
         handBackPromo(h);
     }
@@ -174,6 +189,9 @@ public class OrderService {
         HoldRow h = holdOf(holdId, fan);
         Optional<Order> done = orderForHold(holdId);
         if (done.isPresent()) {
+            if ("CANCELLED".equals(events.get(h.eventId()).status())) {
+                throw new ApiException(HttpStatus.CONFLICT, "event_cancelled"); // and refunded
+            }
             return done.get(); // a retry after the first answer got lost
         }
 
@@ -264,17 +282,33 @@ public class OrderService {
 
     /** Gives a ticket to someone else. Their old QR code (version) stops working. */
     public void transfer(String ticketId, CurrentUser fan, String toEmail) {
-        ticketOf(ticketId, fan);
         User to = users.findByEmail(toEmail.strip().toLowerCase())
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_user"));
-        SeatResult r = seats.write(new SeatCommand.Transfer(ticketId, fan.id().toString(), to.id().toString()));
-        switch (r.outcome()) {
-            case OK -> db.sql("update tickets set owner_id = ?, version = version + 1 where id = ?")
-                    .params(to.id(), ticketId).update();
-            case LIMIT_REACHED -> throw new ApiException(HttpStatus.CONFLICT, "over_limit");
-            case BAD_REQUEST -> throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_request");
-            default -> throw new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket");
+        if (to.id().equals(fan.id())) {
+            throw new ApiException(HttpStatus.CONFLICT, "thats_you");
         }
+        // The ticket row stays locked until the move is saved, so a return, scan or cancel of the
+        // same ticket waits and then sees the new owner.
+        tx.executeWithoutResult(status -> {
+            record Live(boolean scanned, boolean started) {}
+            Live t = db.sql("""
+                    select t.scanned_at is not null, e.starts_at <= now() from tickets t join events e on e.id = t.event_id
+                    where t.id = ? and t.owner_id = ? and t.status = 'VALID' for update of t""")
+                    .params(ticketId, fan.id())
+                    .query((rs, n) -> new Live(rs.getBoolean(1), rs.getBoolean(2))).optional()
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket"));
+            if (t.scanned() || t.started()) {
+                throw new ApiException(HttpStatus.CONFLICT, "too_late_to_transfer");
+            }
+            SeatResult r = seats.write(new SeatCommand.Transfer(ticketId, fan.id().toString(), to.id().toString()));
+            switch (r.outcome()) {
+                case OK -> db.sql("update tickets set owner_id = ?, version = version + 1 where id = ?")
+                        .params(to.id(), ticketId).update();
+                case LIMIT_REACHED -> throw new ApiException(HttpStatus.CONFLICT, "over_limit");
+                case BAD_REQUEST -> throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_request");
+                default -> throw new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket");
+            }
+        });
     }
 
     /** Hands a ticket back for its face value; the seat goes back on sale. */
@@ -299,10 +333,14 @@ public class OrderService {
         boolean claimed = tx.execute(status -> {
             db.sql("select id from orders where id = (select order_id from tickets where id = ?) for update")
                     .param(ticketId).query(UUID.class).single();
-            int n = db.sql("update tickets set status = 'RETURNED' where id = ? and status = 'VALID' and scanned_at is null")
-                    .param(ticketId).update();
+            int n = db.sql("""
+                    update tickets set status = 'RETURNED'
+                    where id = ? and owner_id = ? and status = 'VALID' and scanned_at is null""")
+                    .params(ticketId, fan.id()).update();
             if (n == 1) {
                 queueRefund("return:" + ticketId, t.paymentRef(), t.priceCents(), "ticket returned");
+                // a note to put the seat back on sale, kept until the ledger has done it
+                db.sql("insert into ledger_returns (ticket_id, fan_id) values (?, ?)").params(ticketId, fan.id()).update();
             }
             return n == 1;
         });
@@ -310,15 +348,22 @@ public class OrderService {
             throw new ApiException(HttpStatus.CONFLICT, "too_late_to_return");
         }
         sendRefunds();
-        // then put the seat back on sale. If the ledger can't do it now the seat just stays unsold;
-        // the door already refuses the ticket because Postgres says it was returned.
+        // Then put the seat back on sale. If the ledger can't be reached now, the reconciler tries
+        // again; meanwhile the door refuses the ticket because Postgres says it was returned.
+        finishLedgerReturn(ticketId, fan.id());
+    }
+
+    private void finishLedgerReturn(String ticketId, UUID fanId) {
         try {
-            SeatResult r = seats.write(new SeatCommand.Return(ticketId, fan.id().toString()));
-            if (!r.ok()) {
+            SeatResult r = seats.write(new SeatCommand.Return(ticketId, fanId.toString()));
+            // NO_SUCH_TICKET: an earlier try got through and only its answer was lost
+            if (r.ok() || r.outcome() == Outcome.NO_SUCH_TICKET) {
+                db.sql("delete from ledger_returns where ticket_id = ?").param(ticketId).update();
+            } else {
                 log.warn("ticket {} was returned but the ledger said {}", ticketId, r.outcome());
             }
         } catch (RuntimeException e) {
-            log.warn("ticket {} was returned but its seat couldn't go back on sale: {}", ticketId, e.toString());
+            log.warn("ticket {} was returned but its seat isn't back on sale yet, will retry: {}", ticketId, e.toString());
         }
     }
 
@@ -424,6 +469,12 @@ public class OrderService {
                         false, true))
                 .list()
                 .forEach(this::handBackPromo);
+
+        // returned tickets whose seat the ledger couldn't take back at the time
+        record PendingReturn(String ticketId, UUID fanId) {}
+        db.sql("select ticket_id, fan_id from ledger_returns where created_at < ?").param(cutoff)
+                .query((rs, n) -> new PendingReturn(rs.getString(1), rs.getObject(2, UUID.class))).list()
+                .forEach(p -> finishLedgerReturn(p.ticketId(), p.fanId()));
 
         // a payment that was mid-flight when its event was cancelled can still land as an order;
         // refund those too

@@ -64,7 +64,9 @@ public class DoorService {
 
     /** Adds someone with a door staff account to an event's door team. Adding them twice is fine. */
     public StaffMember addStaff(UUID eventId, CurrentUser by, String email) {
-        events.requireOwner(eventId, by);
+        if (events.requireOwner(eventId, by).status().equals("CANCELLED")) {
+            throw new ApiException(HttpStatus.CONFLICT, "event_cancelled");
+        }
         record Found(UUID id, String email, String name, String role) {}
         Found u = db.sql("select id, email, display_name, role from users where email = lower(trim(?))").param(email)
                 .query((rs, n) -> new Found(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4)))

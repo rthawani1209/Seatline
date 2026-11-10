@@ -15,10 +15,10 @@ import java.util.Map;
  * <ul>
  *   <li>one address on one account (5): the usual guesser hits this first, and only they are stopped;
  *   <li>one address on any accounts (30): spraying a common password across many accounts;
- *   <li>one account from any addresses (50): a guesser with many addresses. This one is soft: it
- *       doesn't apply to an address that has signed in to the account in the last 30 days, so a
- *       stranger hitting it can't keep the owner out.
+ *   <li>one account from any addresses (50): a guesser with many addresses.
  * </ul>
+ * The last two are soft: they don't apply to an address that has signed in to the account in the
+ * last 30 days, so a stranger hitting them can't keep the owner out, even from a shared network.
  * A refused attempt isn't counted, so hammering away doesn't stretch the window: it ends 15 minutes
  * after the last attempt that was let through. Checking and counting happen in one step, so 40
  * attempts sent at once can't all slip through. A successful sign-in takes its attempt back.
@@ -52,7 +52,7 @@ public class LoginLimiter {
         String pair = "p:" + address + "|" + email, fromAddress = "a:" + address, onAccount = "e:" + email;
         boolean known = isKnown(email, address);
         if (count(pair, WINDOW) >= MAX_PER_ADDRESS_AND_ACCOUNT
-                || count(fromAddress, WINDOW) >= MAX_PER_ADDRESS
+                || (!known && count(fromAddress, WINDOW) >= MAX_PER_ADDRESS)
                 || (!known && count(onAccount, WINDOW) >= MAX_PER_ACCOUNT)) {
             return false;
         }

@@ -37,6 +37,9 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -50,7 +53,7 @@ class OrderFlowTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired TestUsers testUsers;
-    @Autowired Seats ledger;
+    @MockitoSpyBean Seats ledger;
     @Autowired FakePayments payments;
     @Autowired JdbcTemplate jdbc;
     @MockitoSpyBean OrderService orders;
@@ -240,6 +243,12 @@ class OrderFlowTest {
                 and created_at > now() - interval '1 minute'""", Long.class)).isGreaterThanOrEqualTo(2);
 
         checkout(late, openHold, "tok_visa").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("event_cancelled"));
+        call(HttpMethod.GET, "/holds/" + openHold, late, null).andExpect(jsonPath("$.state").value("CANCELLED"));
+        // a paid hold now reads as refunded, and paying it again doesn't pretend the tickets still stand
+        String firstHold = jdbc.queryForObject("select hold_id from orders where id = ?::uuid", String.class, first.get("id").asText());
+        call(HttpMethod.GET, "/holds/" + firstHold, fan, null).andExpect(jsonPath("$.state").value("REFUNDED"));
+        checkout(fan, firstHold, "tok_visa").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("event_cancelled"));
         hold(late, null, "FLOOR-A-5").andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("not_on_sale"));
 
@@ -487,6 +496,9 @@ class OrderFlowTest {
         String first = tickets.get(0).get("id").asText();
         String second = tickets.get(1).get("id").asText();
 
+        String me = jdbc.queryForObject("select u.email from users u join holds h on h.fan_id = u.id where h.id = ?", String.class, holdId);
+        call(HttpMethod.POST, "/tickets/" + first + "/transfer", fan, "{\"toEmail\": \"" + me.toUpperCase() + "\"}")
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("thats_you"));
         call(HttpMethod.POST, "/tickets/" + first + "/transfer", fan, "{\"toEmail\": \"" + friendEmail + "\"}")
                 .andExpect(status().isNoContent());
         assertThat(body(call(HttpMethod.GET, "/me/tickets", friend, null)).findValuesAsText("id")).containsExactly(first);
@@ -569,5 +581,98 @@ class OrderFlowTest {
         String email = jdbc.queryForObject("select email from users u join holds h on h.fan_id = u.id where h.id = ?", String.class, holdId);
         assertThat(jdbc.queryForList("select subject from outbox_emails where to_address = ?", String.class, email))
                 .contains("Cancelled: Late Show").doesNotContain("Your Seatline tickets");
+    }
+
+    @Test
+    void aTransferAndAReturnAtTheSameMomentCantBothWin() throws Exception {
+        for (int round = 0; round < 8; round++) {
+            if (round > 0) {
+                onSaleEvent();
+            }
+            String fan = testUsers.bearer(Role.FAN);
+            String friendEmail = "friend-" + UUID.randomUUID() + "@example.com";
+            testUsers.bearer(Role.FAN, friendEmail);
+            String ticket = body(checkout(fan, body(hold(fan, null, "FLOOR-A-1")).get("holdId").asText(), "tok_visa"))
+                    .get("tickets").get(0).get("id").asText();
+            List<Callable<Integer>> both = List.of(
+                    () -> call(HttpMethod.POST, "/tickets/" + ticket + "/transfer", fan, "{\"toEmail\": \"" + friendEmail + "\"}")
+                            .andReturn().getResponse().getStatus(),
+                    () -> call(HttpMethod.POST, "/tickets/" + ticket + "/return", fan, null).andReturn().getResponse().getStatus());
+            List<Integer> got = new ArrayList<>();
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (Future<Integer> f : pool.invokeAll(both)) {
+                    got.add(f.get());
+                }
+            }
+            assertThat(got).as("round %d", round).containsOnlyOnce(204);
+            String status = jdbc.queryForObject("select status from tickets where id = ?", String.class, ticket);
+            if (got.get(0) == 204) {
+                assertThat(status).isEqualTo("VALID");
+                assertThat(ledger.ticket(ticket)).isPresent();
+            } else {
+                assertThat(status).isEqualTo("RETURNED");
+                assertThat(seatStatus("FLOOR-A-1")).isEqualTo("FREE");
+            }
+        }
+    }
+
+    @Test
+    void aTicketCantBeGivenAwayAfterItsScannedOrTheShowStarts() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String friendEmail = "friend-" + UUID.randomUUID() + "@example.com";
+        testUsers.bearer(Role.FAN, friendEmail);
+        JsonNode tickets = body(checkout(fan, body(hold(fan, null, "FLOOR-A-1", "FLOOR-A-2")).get("holdId").asText(), "tok_visa"))
+                .get("tickets");
+        String transfer = "{\"toEmail\": \"" + friendEmail + "\"}";
+
+        jdbc.update("update tickets set scanned_at = now() where id = ?", tickets.get(0).get("id").asText());
+        call(HttpMethod.POST, "/tickets/" + tickets.get(0).get("id").asText() + "/transfer", fan, transfer)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("too_late_to_transfer"));
+
+        jdbc.update("update events set starts_at = now() - interval '1 minute' where id = ?::uuid", eventId);
+        call(HttpMethod.POST, "/tickets/" + tickets.get(1).get("id").asText() + "/transfer", fan, transfer)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("too_late_to_transfer"));
+    }
+
+    @Test
+    void aReturnWhileTheLedgerIsDownPutsTheSeatBackOnSaleLater() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        JsonNode order = body(checkout(fan, body(hold(fan, null, "FLOOR-A-5")).get("holdId").asText(), "tok_visa"));
+        String ticket = order.get("tickets").get(0).get("id").asText();
+
+        doThrow(new IllegalStateException("ledger down")).when(ledger).write(argThat(c -> c instanceof SeatCommand.Return));
+        try {
+            call(HttpMethod.POST, "/tickets/" + ticket + "/return", fan, null).andExpect(status().isNoContent());
+        } finally {
+            doCallRealMethod().when(ledger).write(argThat(c -> c instanceof SeatCommand.Return));
+        }
+        // refunded, and the door won't take it, but the seat isn't on sale yet
+        String ref = jdbc.queryForObject("select payment_ref from orders where id = ?::uuid", String.class, order.get("id").asText());
+        assertThat(payments.refundedOn(ref)).isEqualTo(order.get("tickets").get(0).get("priceCents").asLong());
+        assertThat(seatStatus("FLOOR-A-5")).isEqualTo("SOLD");
+
+        jdbc.update("update ledger_returns set created_at = now() - interval '5 minutes' where ticket_id = ?", ticket);
+        orders.reconcile();
+        assertThat(seatStatus("FLOOR-A-5")).isEqualTo("FREE");
+        assertThat(jdbc.queryForObject("select count(*) from ledger_returns where ticket_id = ?", Long.class, ticket)).isZero();
+    }
+
+    @Test
+    void lettingAHoldGoWhileItsBeingPaidForNeverGivesThePromoBack() throws Exception {
+        String fan = testUsers.bearer(Role.FAN);
+        String holdId = body(hold(fan, "HALF", "FLOOR-A-6")).get("holdId").asText();
+        // "Let go" lands just after the ledger confirmed the payment, before the order is saved
+        int[] letGo = {0};
+        doAnswer(inv -> {
+            letGo[0] = call(HttpMethod.DELETE, "/holds/" + holdId, fan, null).andReturn().getResponse().getStatus();
+            return null;
+        }).when(orders).step("confirmed");
+        try {
+            checkout(fan, holdId, "tok_visa").andExpect(status().isOk());
+        } finally {
+            doNothing().when(orders).step("confirmed");
+        }
+        assertThat(letGo[0]).isEqualTo(409);
+        assertThat(jdbc.queryForObject("select promo_returned from holds where id = ?", Boolean.class, holdId)).isFalse();
     }
 }
