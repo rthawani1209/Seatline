@@ -57,6 +57,8 @@ class OutboxSenderTest {
         }
         assertThat(jdbc.queryForObject("select attempts from outbox_emails where to_address = 'bounce@example.com'",
                 Integer.class)).isEqualTo(OutboxSender.MAX_ATTEMPTS);
+        assertThat(jdbc.queryForObject("select body from outbox_emails where to_address = 'bounce@example.com'", String.class))
+                .isEmpty();
         verify(mail, org.mockito.Mockito.times(1))
                 .send(argThat((SimpleMailMessage m) -> m.getTo()[0].equals("ok@example.com")));
     }

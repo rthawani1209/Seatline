@@ -63,7 +63,7 @@ You need Docker.
 docker compose up -d --build
 ```
 
-Then open http://localhost:3000. The first start makes the TLS certificates for the five ledger nodes and the API. Locally no email is sent: confirmation codes and reset links wait in the `outbox_emails` table (`docker compose exec postgres psql -U seatline -c 'select body from outbox_emails order by id desc limit 1'`); set `SEATLINE_SMTP_HOST` and friends to send them. Set `SEATLINE_JWT_SECRET` in a `.env` file to keep people signed in across API restarts. Every new account is a fan; to try the organizer, door or admin screens, change your role in Postgres (`update users set role = 'ADMIN' where email = '...'`) and sign in again.
+Then open http://localhost:3000. The first start makes the TLS certificates for the five ledger nodes and the API. Locally no email is sent: confirmation codes and reset links wait in the `outbox_emails` table (`docker compose exec postgres psql -U seatline -c 'select body from outbox_emails order by id desc limit 1'`); set `SEATLINE_SMTP_HOST` and friends to send them. Set `SEATLINE_JWT_SECRET` in a `.env` file to keep people signed in across API restarts. Every new account is a fan. On a server, the account named by `SEATLINE_ADMIN_EMAIL` becomes the first admin when it sets its password from a reset link (see [deploy/README.md](deploy/README.md)). Locally, to try the organizer, door or admin screens, change your role in Postgres (`update users set role = 'ADMIN' where email = '...'`) and sign in again.
 
 To run it for real on a server, see [`deploy/README.md`](deploy/README.md).
 

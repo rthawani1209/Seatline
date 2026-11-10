@@ -264,4 +264,33 @@ class DoorFlowTest {
                 .andExpect(status().isNoContent());
         assertThat(body(call(HttpMethod.GET, "/events/" + eventId + "/door-staff", organizer, null))).isEmpty();
     }
+
+    @Test
+    void aScanOfTheOldCodeAndATransferAtTheSameMomentCantBothWin() throws Exception {
+        for (int round = 0; round < 20; round++) {
+            String event = newEvent();
+            addToDoorTeam(event, doorEmail).andExpect(status().isCreated());
+            String tier = body(mvc.perform(request(HttpMethod.GET, "/events/" + event))).get("tiers").get(0).get("id").asText();
+            String buyer = testUsers.bearer(Role.FAN);
+            String friendEmail = "friend-" + UUID.randomUUID() + "@example.com";
+            testUsers.bearer(Role.FAN, friendEmail);
+            String holdId = body(call(HttpMethod.POST, "/events/" + event + "/holds", buyer,
+                    "{\"items\": [{\"seat\": \"FLOOR-A-1\", \"tierId\": \"%s\"}]}".formatted(tier))).get("holdId").asText();
+            String ticket = body(call(HttpMethod.POST, "/holds/" + holdId + "/checkout", buyer, "{\"cardToken\": \"tok_visa\"}"))
+                    .get("tickets").get(0).get("id").asText();
+            String code = qr(buyer, ticket);
+
+            List<Callable<String>> both = List.of(
+                    () -> body(scanAs(door, code, event)).get("result").asText(),
+                    () -> String.valueOf(call(HttpMethod.POST, "/tickets/" + ticket + "/transfer", buyer,
+                            "{\"toEmail\": \"" + friendEmail + "\"}").andReturn().getResponse().getStatus()));
+            List<String> got = new ArrayList<>();
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (Future<String> f : pool.invokeAll(both)) {
+                    got.add(f.get());
+                }
+            }
+            assertThat(got.get(0).equals("OK") && got.get(1).equals("204")).as("round %d: %s", round, got).isFalse();
+        }
+    }
 }

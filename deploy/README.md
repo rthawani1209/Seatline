@@ -33,8 +33,8 @@ real money moves. Real card payments need a Stripe account wired into `backend/.
    needs port 80 to get the certificate.
 7. **Configure storage**: 30 GiB, gp3.
 8. **Advanced details → User data**: paste all of [`aws-user-data.sh`](aws-user-data.sh), then fill
-   in the lines at the top: your email as `ADMIN_EMAIL`, and the Gmail lines. Email is needed to
-   become the admin (step 3); it can also be added later, see step 5.
+   in your email as `ADMIN_EMAIL` at the top. The email password is added after launch (step 5),
+   because anything in user data can be read back from the instance.
 9. **Launch instance**.
 
 **Keep the address (optional, recommended).** Under **Elastic IPs → Allocate Elastic IP address →
@@ -53,10 +53,11 @@ with "Seatline setup finished".
 
 ## 3. The first admin
 
-Sign up on the site with the `ADMIN_EMAIL` address and confirm the email. Then sign out, click
+This needs email, so do step 5 first (or use the terminal way below). Sign up on the site with the `ADMIN_EMAIL` address and confirm the email. Then sign out, click
 **Forgot password?** on the sign-in page, and set your password from the emailed link. That makes
 the account the admin. (Only a reset link counts: it proves the inbox is yours even if someone else
-signed up with your address first, and it signs them out.) From then on the **Admin** page makes organizers and door staff, and organizers add door
+signed up with your address first, and it signs them out.) It only works while the site has no
+admin yet. From then on the **Admin** page makes organizers and door staff, and organizers add door
 staff to each event's door team on the event page.
 
 Without email set up yet, confirm the account by hand in the instance's terminal:

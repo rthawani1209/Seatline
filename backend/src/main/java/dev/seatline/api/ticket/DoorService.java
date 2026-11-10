@@ -150,18 +150,23 @@ public class DoorService {
         if (!atEvent.equals(t.eventId())) {
             return new Scan(Result.WRONG_EVENT, t.seat(), t.tier(), t.eventName(), null);
         }
-        // The update only matches once, so two doors scanning the same code can't both let it in,
-        // and only while the ticket is still valid, so a return or cancel that just landed wins.
+        // The update only matches once, so two doors scanning the same code can't both let it in;
+        // only while the ticket is still valid, so a return or cancel that just landed wins; and
+        // only for this code's version, so a transfer that just landed wins too.
         Instant now = db.sql("""
-                update tickets set scanned_at = now() where id = ? and scanned_at is null and status = 'VALID'
+                update tickets set scanned_at = now()
+                where id = ? and scanned_at is null and status = 'VALID' and version = ?
                 returning scanned_at""")
-                .param(p.ticketId()).query(Timestamp.class).optional().map(Timestamp::toInstant).orElse(null);
+                .params(p.ticketId(), p.version()).query(Timestamp.class).optional().map(Timestamp::toInstant).orElse(null);
         if (now != null) {
             return new Scan(Result.OK, t.seat(), t.tier(), t.eventName(), now);
         }
-        record After(Timestamp scannedAt, String status) {}
-        After after = db.sql("select scanned_at, status from tickets where id = ?").param(p.ticketId())
-                .query((rs, n) -> new After(rs.getTimestamp(1), rs.getString(2))).single();
+        record After(Timestamp scannedAt, String status, int version) {}
+        After after = db.sql("select scanned_at, status, version from tickets where id = ?").param(p.ticketId())
+                .query((rs, n) -> new After(rs.getTimestamp(1), rs.getString(2), rs.getInt(3))).single();
+        if (after.version() != p.version()) {
+            return Scan.of(Result.OLD_CODE);
+        }
         if (after.scannedAt() != null) {
             return new Scan(Result.ALREADY_SCANNED, t.seat(), t.tier(), t.eventName(), after.scannedAt().toInstant());
         }

@@ -76,7 +76,8 @@ function Admin() {
         </h1>
         <p className="hint">
           Find an account by email and change what it can do. Door staff also need adding to an event&apos;s door team by its
-          organizer.
+          organizer. The site&apos;s first admin is the <code>SEATLINE_ADMIN_EMAIL</code> account, made when it sets its
+          password from a &ldquo;Forgot password?&rdquo; link.
         </p>
       </div>
 

@@ -43,7 +43,7 @@ if [ ! -f .env ]; then
   cat > .env <<ENV
 SEATLINE_DOMAIN=$SEATLINE_DOMAIN
 SEATLINE_AUTO_DOMAIN=$auto
-# this account becomes an admin once its email is confirmed
+# this account becomes the first admin when it sets its password from a reset link (Forgot password?)
 SEATLINE_ADMIN_EMAIL=${SEATLINE_ADMIN_EMAIL:-}
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 REDIS_PASSWORD=$(openssl rand -hex 24)

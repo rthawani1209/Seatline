@@ -282,11 +282,6 @@ public class OrderService {
 
     /** Gives a ticket to someone else. Their old QR code (version) stops working. */
     public void transfer(String ticketId, CurrentUser fan, String toEmail) {
-        User to = users.findByEmail(toEmail.strip().toLowerCase())
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_user"));
-        if (to.id().equals(fan.id())) {
-            throw new ApiException(HttpStatus.CONFLICT, "thats_you");
-        }
         // The ticket row stays locked until the move is saved, so a return, scan or cancel of the
         // same ticket waits and then sees the new owner.
         tx.executeWithoutResult(status -> {
@@ -299,6 +294,13 @@ public class OrderService {
                     .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_ticket"));
             if (t.scanned() || t.started()) {
                 throw new ApiException(HttpStatus.CONFLICT, "too_late_to_transfer");
+            }
+            // only now look up who it's going to, so someone without the ticket can't use this to
+            // find out which emails have accounts
+            User to = users.findByEmail(toEmail.strip().toLowerCase())
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "no_such_user"));
+            if (to.id().equals(fan.id())) {
+                throw new ApiException(HttpStatus.CONFLICT, "thats_you");
             }
             SeatResult r = seats.write(new SeatCommand.Transfer(ticketId, fan.id().toString(), to.id().toString()));
             switch (r.outcome()) {
@@ -353,7 +355,8 @@ public class OrderService {
         finishLedgerReturn(ticketId, fan.id());
     }
 
-    private void finishLedgerReturn(String ticketId, UUID fanId) {
+    /** False if the ledger couldn't be reached. */
+    private boolean finishLedgerReturn(String ticketId, UUID fanId) {
         try {
             SeatResult r = seats.write(new SeatCommand.Return(ticketId, fanId.toString()));
             // NO_SUCH_TICKET: an earlier try got through and only its answer was lost
@@ -362,8 +365,10 @@ public class OrderService {
             } else {
                 log.warn("ticket {} was returned but the ledger said {}", ticketId, r.outcome());
             }
+            return true;
         } catch (RuntimeException e) {
             log.warn("ticket {} was returned but its seat isn't back on sale yet, will retry: {}", ticketId, e.toString());
+            return false;
         }
     }
 
@@ -472,9 +477,12 @@ public class OrderService {
 
         // returned tickets whose seat the ledger couldn't take back at the time
         record PendingReturn(String ticketId, UUID fanId) {}
-        db.sql("select ticket_id, fan_id from ledger_returns where created_at < ?").param(cutoff)
-                .query((rs, n) -> new PendingReturn(rs.getString(1), rs.getObject(2, UUID.class))).list()
-                .forEach(p -> finishLedgerReturn(p.ticketId(), p.fanId()));
+        for (PendingReturn p : db.sql("select ticket_id, fan_id from ledger_returns where created_at < ? order by created_at")
+                .param(cutoff).query((rs, n) -> new PendingReturn(rs.getString(1), rs.getObject(2, UUID.class))).list()) {
+            if (!finishLedgerReturn(p.ticketId(), p.fanId())) {
+                break; // the ledger is down: one wait per round, not one per ticket
+            }
+        }
 
         // a payment that was mid-flight when its event was cancelled can still land as an order;
         // refund those too

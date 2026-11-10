@@ -55,8 +55,8 @@ class MeController {
 
     @PostMapping("/2fa/enable")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void enable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody EnableRequest r, HttpServletRequest http) {
-        accounts.enableTwoFactor(UUID.fromString(jwt.getSubject()), r.code(), r.password(), http.getRemoteAddr());
+    void enable(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody EnableRequest r) {
+        accounts.enableTwoFactor(UUID.fromString(jwt.getSubject()), r.code(), r.password());
     }
 
     @PostMapping("/2fa/disable")

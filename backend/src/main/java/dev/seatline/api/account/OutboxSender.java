@@ -67,7 +67,11 @@ class OutboxSender {
                 jdbc.update("update outbox_emails set sent_at = now(), attempts = attempts + 1, body = '' where id = ?", e.id());
                 sent++;
             } catch (RuntimeException failed) {
-                jdbc.update("update outbox_emails set attempts = attempts + 1 where id = ?", e.id());
+                // after the last try it's never sent, so its link needn't be kept either
+                jdbc.update("""
+                        update outbox_emails set attempts = attempts + 1,
+                               body = case when attempts + 1 >= ? then '' else body end
+                        where id = ?""", MAX_ATTEMPTS, e.id());
                 log.warn("email {} to the mail server failed: {}", e.id(), failed.toString());
             }
         }

@@ -505,6 +505,9 @@ class OrderFlowTest {
         assertThat(ledger.ticket(first).orElseThrow().version()).isEqualTo(2); // old QR code is dead
         // it's not the sender's any more
         call(HttpMethod.POST, "/tickets/" + first + "/return", fan, null).andExpect(status().isNotFound());
+        // and who has an account can't be fished out with a ticket that isn't yours
+        call(HttpMethod.POST, "/tickets/" + second + "/transfer", friend, "{\"toEmail\": \"nobody-" + UUID.randomUUID() + "@example.com\"}")
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.error").value("no_such_ticket"));
         // and the friend can't cash it in either: the refund would go to the buyer's card
         call(HttpMethod.POST, "/tickets/" + first + "/return", friend, null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("only_the_buyer_can_return"));

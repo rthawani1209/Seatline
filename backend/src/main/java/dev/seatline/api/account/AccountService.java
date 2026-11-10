@@ -3,6 +3,7 @@ package dev.seatline.api.account;
 import dev.seatline.api.security.SeatlineSettings;
 import dev.seatline.api.security.TokenService;
 import dev.seatline.api.web.ApiException;
+import dev.seatline.api.web.RateLimiter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -33,6 +34,7 @@ public class AccountService {
     private final PasswordEncoder passwords;
     private final TokenService tokens;
     private final LoginLimiter limiter;
+    private final RateLimiter rateLimiter;
     private final Mailer mailer;
     private final JdbcTemplate jdbc;
     private final Clock clock;
@@ -42,12 +44,14 @@ public class AccountService {
     private final String dummyHash;
 
     public AccountService(UserRepository users, PasswordEncoder passwords, TokenService tokens, LoginLimiter limiter,
+                          RateLimiter rateLimiter,
                           Mailer mailer, JdbcTemplate jdbc, Clock clock, SeatlineSettings settings,
                           @Value("${seatline.admin-email:}") String adminEmail) {
         this.users = users;
         this.passwords = passwords;
         this.tokens = tokens;
         this.limiter = limiter;
+        this.rateLimiter = rateLimiter;
         this.mailer = mailer;
         this.jdbc = jdbc;
         this.clock = clock;
@@ -137,16 +141,14 @@ public class AccountService {
     }
 
     @Transactional
-    public void enableTwoFactor(UUID userId, String code, String password, String address) {
+    public void enableTwoFactor(UUID userId, String code, String password) {
         User user = get(userId);
-        // someone at an unlocked laptop mustn't be able to tie the account to their own phone
-        if (!limiter.tryAttempt(user.email(), address)) {
-            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "too_many_attempts");
-        }
+        // Someone at an unlocked laptop mustn't be able to tie the account to their own phone. The
+        // password guesses get their own small budget, so they never count against signing in.
+        rateLimiter.spend("2fa-enable:" + userId, 5);
         if (!passwords.matches(password, user.passwordHash())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "wrong_password");
         }
-        limiter.succeeded(user.email(), address);
         if (user.totpPending() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "no_setup_in_progress");
         }
@@ -239,9 +241,13 @@ public class AccountService {
         user.markEmailVerified();
         // The site owner's account becomes the first admin here, not when it's confirmed: whoever
         // signed up with the owner's email chose that password, but a reset link sets a password
-        // only the inbox's owner knows (and signs everyone else out).
-        if (user.email().equals(adminEmail)) {
+        // only the inbox's owner knows (and signs everyone else out). Two-step sign-in is cleared
+        // too, in case whoever signed up first turned it on with their own phone. Once only: an
+        // admin demoted later doesn't get the role back by resetting again.
+        if (user.email().equals(adminEmail)
+                && jdbc.update("insert into first_admin (email) values (?) on conflict do nothing", adminEmail) == 1) {
             user.setRole(Role.ADMIN);
+            user.disableTotp();
         }
         jdbc.update("delete from password_resets where user_id = ?", user.id()); // older links too
     }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { AuthCard, authStyles as s } from "@/components/AuthCard";
-import { api, explain } from "@/lib/api";
+import { api, explain, setToken } from "@/lib/api";
 import { useHydrated } from "@/lib/hooks";
 
 export default function ResetPage() {
@@ -34,6 +34,8 @@ function Reset() {
     setBusy(true);
     try {
       await api("/auth/reset", { body: { token, password } });
+      // a reset signs out every session, this one included
+      setToken(null);
       router.replace("/login?reset=1");
     } catch (err) {
       setError(explain(err));

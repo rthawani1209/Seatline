@@ -37,7 +37,8 @@ type Options = { method?: string; body?: unknown; signal?: AbortSignal };
 
 export async function api<T>(path: string, opts: Options = {}): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
-  const token = getToken();
+  // sign-in and friends don't need a session, and an old revoked one would only get them refused
+  const token = path.startsWith("/auth/") ? null : getToken();
   if (token) headers.authorization = `Bearer ${token}`;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
 

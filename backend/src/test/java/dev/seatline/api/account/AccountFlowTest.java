@@ -83,6 +83,13 @@ class AccountFlowTest {
         postJson("/auth/verify", "{\"token\": \"" + verificationToken("owner@example.com") + "\"}").andExpect(status().isNoContent());
         String squatter = token(login("owner@example.com", squatterPassword, null));
         mvc.perform(get("/me").header("Authorization", "Bearer " + squatter)).andExpect(jsonPath("$.role").value("FAN"));
+        // and ties the account to their own phone
+        String auth = "Bearer " + squatter;
+        String secret = json.readTree(mvc.perform(post("/me/2fa/setup").header("Authorization", auth))
+                .andReturn().getResponse().getContentAsString()).get("secret").asText();
+        mvc.perform(post("/me/2fa/enable").header("Authorization", auth).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"code\": \"" + Totp.code(secret, Totp.currentStep(Clock.systemUTC())) + "\", \"password\": \""
+                        + squatterPassword + "\"}")).andExpect(status().isNoContent());
 
         // the owner takes it back with a reset link, which only reaches their inbox
         postJson("/auth/forgot", "{\"email\": \"owner@example.com\"}").andExpect(status().isNoContent());
@@ -93,8 +100,20 @@ class AccountFlowTest {
 
         mvc.perform(get("/me").header("Authorization", "Bearer " + squatter)).andExpect(status().isUnauthorized());
         login("owner@example.com", squatterPassword, null).andExpect(status().isUnauthorized());
+        // the reset cleared the squatter's two-step sign-in, so no code is asked for
         String owner = token(login("owner@example.com", PASSWORD, null));
-        mvc.perform(get("/me").header("Authorization", "Bearer " + owner)).andExpect(jsonPath("$.role").value("ADMIN"));
+        mvc.perform(get("/me").header("Authorization", "Bearer " + owner)).andExpect(jsonPath("$.role").value("ADMIN"))
+                .andExpect(jsonPath("$.twoFactor").value(false));
+
+        // made admin once only: demoted later, another reset doesn't bring the role back
+        jdbc.update("update users set role = 'FAN' where email = 'owner@example.com'");
+        postJson("/auth/forgot", "{\"email\": \"owner@example.com\"}").andExpect(status().isNoContent());
+        String again = jdbc.queryForObject("select body from outbox_emails where to_address = ? order by id desc limit 1",
+                String.class, "owner@example.com");
+        postJson("/auth/reset", "{\"token\": \"" + again.substring(again.indexOf("token=") + 6).split("\\s")[0]
+                + "\", \"password\": \"" + PASSWORD + "\"}").andExpect(status().isNoContent());
+        mvc.perform(get("/me").header("Authorization", "Bearer " + token(login("owner@example.com", PASSWORD, null))))
+                .andExpect(jsonPath("$.role").value("FAN"));
         // anyone else stays a fan
         String fan = signUp(email());
         mvc.perform(get("/me").header("Authorization", "Bearer " + fan)).andExpect(jsonPath("$.role").value("FAN"));

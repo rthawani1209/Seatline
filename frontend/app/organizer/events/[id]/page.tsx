@@ -78,7 +78,9 @@ function Live() {
     return (
       <div className="wrap" style={{ padding: "60px 20px" }}>
         <div className="alert" role="alert">
-          {explain(eventError)}
+          {eventError instanceof ApiError && (eventError.status === 404 || eventError.status === 400)
+            ? "We couldn't find that event. Check the link, or pick it from your events."
+            : explain(eventError)}
         </div>
       </div>
     );
@@ -94,8 +96,8 @@ function Live() {
   const draft = event.status === "DRAFT";
   const cancelled = event.status === "CANCELLED";
   const started = Date.parse(event.startsAt) <= Date.now();
-  // only the event's own organizer (or an admin) can call it off
-  const canCancel = !!me && (me.role === "ADMIN" || me.id === event.organizerId);
+  // only the event's own organizer (or an admin) can call it off, add codes or add door staff
+  const canManage = !!me && (me.role === "ADMIN" || me.id === event.organizerId);
   const peak = Math.max(1, ...rates);
   const doubleSold = stats ? Math.max(0, stats.tickets - stats.sold) : 0;
 
@@ -121,7 +123,7 @@ function Live() {
           <Link href={`/events/${id}`} className="btn">
             Fan page
           </Link>
-          {!cancelled && !started && canCancel && (
+          {!cancelled && !started && canManage && (
             <button type="button" className="btn" onClick={() => setConfirmCancel(true)} disabled={busy}>
               Cancel event
             </button>
@@ -158,7 +160,7 @@ function Live() {
 
       <div className={s.tiles}>
         <Tile label="Seats sold" value={stats ? stats.sold.toLocaleString() : "…"} sub={stats ? `of ${stats.seats.toLocaleString()}` : ""} big />
-        <Tile label="Held right now" value={stats ? stats.held.toLocaleString() : "…"} />
+        <Tile label="Held right now" value={cancelled ? "0" : stats ? stats.held.toLocaleString() : "…"} />
         <Tile label="In the waiting room" value={stats ? stats.waiting.toLocaleString() : "…"} />
         <Tile label="Revenue" value={stats ? money(stats.revenueCents) : "…"} sub={cancelled ? "all refunded" : ""} />
         <Tile label="Orders" value={stats ? stats.orders.toLocaleString() : "…"} sub={cancelled ? "all refunded" : ""} />
@@ -191,8 +193,8 @@ function Live() {
         </div>
       </section>
 
-      {!draft && !cancelled && <PromoCodes eventId={id} />}
-      {!draft && !cancelled && <DoorTeam eventId={id} />}
+      {!draft && !cancelled && canManage && <PromoCodes eventId={id} />}
+      {!draft && !cancelled && canManage && <DoorTeam eventId={id} />}
 
       {me?.role === "ADMIN" && <ChaosPanel />}
     </div>

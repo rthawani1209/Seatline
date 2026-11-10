@@ -5,31 +5,19 @@
 # the first boot) the service tries again a minute later, so nothing needs doing by hand.
 # The first start takes 10 to 15 minutes; progress is in /var/log/seatline-setup.log.
 #
-# Fill in the lines below first. ADMIN_EMAIL's account becomes the site's admin once you sign up
-# with it and then set its password with "Forgot password?" (see deploy/README.md, step 3).
-# The SMTP lines are for sign-up emails: for Gmail, turn on 2-Step Verification, make an app
-# password at https://myaccount.google.com/apppasswords and paste it without the spaces. They can
-# be filled in later in /home/ubuntu/Seatline/deploy/.env instead.
+# Fill in the two lines below first. ADMIN_EMAIL's account becomes the site's admin once you sign
+# up with it and then set its password with "Forgot password?" (see deploy/README.md, step 3).
+# The email (SMTP) password doesn't go here: AWS keeps user data readable from the instance and the
+# console, so it goes in /home/ubuntu/Seatline/deploy/.env once the server is up (README step 5).
 
 DOMAIN=auto                      # or your own domain, once its DNS points at this server
 ADMIN_EMAIL=you@example.com
-SMTP_HOST=smtp.gmail.com
-SMTP_USER=                       # e.g. you@gmail.com
-SMTP_PASSWORD=                   # the 16-letter app password
-MAIL_FROM=                       # usually the same as SMTP_USER
 
 set -euo pipefail
 umask 077
 
-# the settings, readable by root only (the SMTP password is in here); used on the first run
-cat > /etc/seatline.env <<ENV
-SEATLINE_DOMAIN='$DOMAIN'
-SEATLINE_ADMIN_EMAIL='$ADMIN_EMAIL'
-SEATLINE_SMTP_HOST='${SMTP_USER:+$SMTP_HOST}'
-SEATLINE_SMTP_USER='$SMTP_USER'
-SEATLINE_SMTP_PASSWORD='$SMTP_PASSWORD'
-SEATLINE_MAIL_FROM='${MAIL_FROM:-$SMTP_USER}'
-ENV
+# the settings, readable by root only; used on the first run (%q keeps odd characters intact)
+printf 'SEATLINE_DOMAIN=%q\nSEATLINE_ADMIN_EMAIL=%q\n' "$DOMAIN" "$ADMIN_EMAIL" > /etc/seatline.env
 
 # wait for apt instead of failing when unattended-upgrades holds its lock
 echo 'DPkg::Lock::Timeout "600";' > /etc/apt/apt.conf.d/90seatline
