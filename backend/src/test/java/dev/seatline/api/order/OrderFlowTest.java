@@ -280,6 +280,11 @@ class OrderFlowTest {
         String other = testUsers.bearer(Role.ORGANIZER);
         call(HttpMethod.GET, "/events/" + eventId + "/stats", other, null).andExpect(status().isForbidden());
         assertThat(body(call(HttpMethod.GET, "/organizer/events", other, null)).findValuesAsText("id")).doesNotContain(eventId);
+
+        // once the event is cancelled, the open hold can never be paid for, so it isn't counted as held
+        call(HttpMethod.POST, "/events/" + eventId + "/cancel", organizer, null).andExpect(status().isNoContent());
+        stats = body(call(HttpMethod.GET, "/events/" + eventId + "/stats", organizer, null));
+        assertThat(stats.get("held").asInt()).isZero();
     }
 
     @Test

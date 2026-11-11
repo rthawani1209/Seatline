@@ -160,7 +160,7 @@ function Live() {
 
       <div className={s.tiles}>
         <Tile label="Seats sold" value={stats ? stats.sold.toLocaleString() : "…"} sub={stats ? `of ${stats.seats.toLocaleString()}` : ""} big />
-        <Tile label="Held right now" value={cancelled ? "0" : stats ? stats.held.toLocaleString() : "…"} />
+        <Tile label="Held right now" value={stats ? stats.held.toLocaleString() : "…"} />
         <Tile label="In the waiting room" value={stats ? stats.waiting.toLocaleString() : "…"} />
         <Tile label="Revenue" value={stats ? money(stats.revenueCents) : "…"} sub={cancelled ? "all refunded" : ""} />
         <Tile label="Orders" value={stats ? stats.orders.toLocaleString() : "…"} sub={cancelled ? "all refunded" : ""} />

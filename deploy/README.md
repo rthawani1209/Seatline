@@ -57,7 +57,7 @@ This needs email, so do step 5 first (or use the terminal way below). Sign up on
 **Forgot password?** on the sign-in page, and set your password from the emailed link. That makes
 the account the admin. (Only a reset link counts: it proves the inbox is yours even if someone else
 signed up with your address first, and it signs them out.) It only works while the site has no
-admin yet. From then on the **Admin** page makes organizers and door staff, and organizers add door
+admin yet (on a site that already has one, nobody else can become admin this way). From then on the **Admin** page makes organizers and door staff, and organizers add door
 staff to each event's door team on the event page.
 
 Without email set up yet, confirm the account by hand in the instance's terminal:
@@ -92,7 +92,9 @@ without it the database password and signed-in sessions are lost.
 ## 5. Email
 
 Fill in the `SEATLINE_SMTP_*` lines and `SEATLINE_MAIL_FROM` in `deploy/.env` (in the instance's
-terminal: `nano ~/Seatline/deploy/.env`) and run `sudo ~/Seatline/deploy/setup.sh`.
+terminal: `nano ~/Seatline/deploy/.env`) and run `sudo ~/Seatline/deploy/setup.sh`. Put each value
+in single quotes, like `SEATLINE_SMTP_PASSWORD='abcdabcdabcdabcd'`, so a `$` in a password isn't
+read as something else.
 
 - **Gmail** (free, fine for a demo): turn on 2-Step Verification, make an app password at
   https://myaccount.google.com/apppasswords, then host `smtp.gmail.com`, port 587, your Gmail

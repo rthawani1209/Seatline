@@ -59,11 +59,13 @@ class OrganizerController {
         int free = 0;
         int held = 0;
         int sold = 0;
+        // holds on a cancelled event can never be paid for, so they don't count as held
+        boolean cancelled = e.status().equals("CANCELLED");
         if (live != null) {
             for (SeatStatus s : live.values()) {
                 switch (s) {
                     case FREE -> free++;
-                    case HELD -> held++;
+                    case HELD -> { if (cancelled) free++; else held++; }
                     case SOLD -> sold++;
                 }
             }
