@@ -114,6 +114,15 @@ class AccountFlowTest {
                 + "\", \"password\": \"" + PASSWORD + "\"}").andExpect(status().isNoContent());
         mvc.perform(get("/me").header("Authorization", "Bearer " + token(login("owner@example.com", PASSWORD, null))))
                 .andExpect(jsonPath("$.role").value("FAN"));
+        // nor does pointing the setting at the owner's address on a site whose first admin was someone else
+        jdbc.update("update first_admin set email = 'earlier-admin@example.com'");
+        postJson("/auth/forgot", "{\"email\": \"owner@example.com\"}").andExpect(status().isNoContent());
+        String third = jdbc.queryForObject("select body from outbox_emails where to_address = ? order by id desc limit 1",
+                String.class, "owner@example.com");
+        postJson("/auth/reset", "{\"token\": \"" + third.substring(third.indexOf("token=") + 6).split("\\s")[0]
+                + "\", \"password\": \"" + PASSWORD + "\"}").andExpect(status().isNoContent());
+        mvc.perform(get("/me").header("Authorization", "Bearer " + token(login("owner@example.com", PASSWORD, null))))
+                .andExpect(jsonPath("$.role").value("FAN"));
         // anyone else stays a fan
         String fan = signUp(email());
         mvc.perform(get("/me").header("Authorization", "Bearer " + fan)).andExpect(jsonPath("$.role").value("FAN"));

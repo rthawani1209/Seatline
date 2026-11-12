@@ -65,7 +65,8 @@ Without email set up yet, confirm the account by hand in the instance's terminal
 ```
 cd ~/Seatline/deploy
 sudo docker compose -f docker-compose.prod.yml --env-file .env exec postgres \
-  psql -U seatline -c "update users set email_verified = true, role = 'ADMIN' where email = 'you@example.com'"
+  psql -U seatline -c "update users set email_verified = true, role = 'ADMIN' where email = 'you@example.com'" \
+  -c "insert into first_admin (email) values ('you@example.com') on conflict do nothing"
 ```
 
 ## 4. Using your own domain later

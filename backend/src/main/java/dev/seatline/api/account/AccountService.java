@@ -242,10 +242,12 @@ public class AccountService {
         // The site owner's account becomes the first admin here, not when it's confirmed: whoever
         // signed up with the owner's email chose that password, but a reset link sets a password
         // only the inbox's owner knows (and signs everyone else out). Two-step sign-in is cleared
-        // too, in case whoever signed up first turned it on with their own phone. Once only: an
-        // admin demoted later doesn't get the role back by resetting again.
-        if (user.email().equals(adminEmail)
-                && jdbc.update("insert into first_admin (email) values (?) on conflict do nothing", adminEmail) == 1) {
+        // too, in case whoever signed up first turned it on with their own phone. Once per site: an
+        // admin demoted later doesn't get the role back, and pointing the setting at another
+        // address doesn't make a second one.
+        if (user.email().equals(adminEmail) && jdbc.update("""
+                insert into first_admin (email) select ? where not exists (select 1 from first_admin)
+                on conflict do nothing""", adminEmail) == 1) {
             user.setRole(Role.ADMIN);
             user.disableTotp();
         }
